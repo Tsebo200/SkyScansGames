@@ -1,0 +1,8 @@
+fastapi
+uvicorn[standard]
+requests
+aiohttp
+cachetools
+ratelimit
+sqlalchemy
+python-dotenv

@@ -1,0 +1,133 @@
+openapi: 3.0.0
+info:
+  title: SkyScansGames API
+  version: 1.0.0
+  description: API for game quality scanning
+
+servers:
+  - url: http://localhost:8000/api
+
+paths:
+  /games/search:
+    get:
+      summary: Search games by title and generation
+      parameters:
+        - name: q
+          in: query
+          required: true
+          schema:
+            type: string
+        - name: gen
+          in: query
+          schema:
+            type: integer
+            minimum: 7
+            maximum: 9
+      responses:
+        '200':
+          description: List of games
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/Game'
+        '400':
+          description: Invalid parameters
+
+  /games/{id}/scan:
+    post:
+      summary: Scan game for quality scores
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Scan initiated
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScanResult'
+        '404':
+          description: Game not found
+
+  /games/{id}/scores:
+    get:
+      summary: Get scores for a game
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        '200':
+          description: Game scores
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ScoreMetrics'
+        '404':
+          description: Game not found
+
+components:
+  schemas:
+    Game:
+      type: object
+      properties:
+        id:
+          type: integer
+        title:
+          type: string
+        generation:
+          type: integer
+        platform:
+          type: string
+        engine:
+          type: string
+    ScoreMetrics:
+      type: object
+      properties:
+        reviews_score:
+          type: number
+          minimum: 0
+          maximum: 100
+        graphic_score:
+          type: number
+          minimum: 0
+          maximum: 100
+        microtransactions_score:
+          type: number
+          minimum: 0
+          maximum: 100
+        game_mechanics_score:
+          type: number
+          minimum: 0
+          maximum: 100
+        completeness_score:
+          type: number
+          minimum: 0
+          maximum: 100
+        story_quality_score:
+          type: number
+          minimum: 0
+          maximum: 100
+        accessibility_score:
+          type: number
+          minimum: 0
+          maximum: 100
+        overall_score:
+          type: number
+          minimum: 0
+          maximum: 100
+    ScanResult:
+      type: object
+      properties:
+        status:
+          type: string
+          enum: [pending, completed]
+        scores:
+          $ref: '#/components/schemas/ScoreMetrics'
