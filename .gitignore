@@ -3,3 +3,16 @@
 __pycache__/
 *.pyc
 .DS_Store
+# Virtual environments
+.venv/
+venv/
+backend/venv/
+env/
+ENV/
+
+*.specify
+*specs
+/skyscans_games.db
+/backend/__pycache__/
+*/skyscans_games.db
+backend/skyscans_games.db
