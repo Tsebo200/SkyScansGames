@@ -1,23 +1,36 @@
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, Request
+from fastapi.responses import JSONResponse
+from starlette.exceptions import HTTPException as StarletteHTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from typing import List, Optional
 import sqlite3
 import json
+import re
 from datetime import datetime, timedelta
 import os
 from contextlib import contextmanager
 import requests
+try:
+    from bs4 import BeautifulSoup  # type: ignore
+except ImportError:  # Fallback if not installed yet
+    BeautifulSoup = None  # type: ignore
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import time
 from functools import lru_cache
-
+import math
+ 
 # Load environment variables
 try:
-    from dotenv import load_dotenv
-    load_dotenv()
+    from dotenv import load_dotenv, find_dotenv
+    # 1) Load from repo root (or nearest up the tree) when server is started from project root
+    root_env = find_dotenv(usecwd=True)
+    if root_env:
+        load_dotenv(root_env)
+    # 2) Also load a local backend/.env sitting next to this file (does not override root by default)
+    load_dotenv(os.path.join(os.path.dirname(__file__), '.env'), override=False)
 except ImportError:
     print("python-dotenv not installed. Install with: pip install python-dotenv")
 
@@ -26,7 +39,14 @@ app = FastAPI(title="SkyScansGames API", version="1.0.0")
 # Configuration
 RAWG_API_KEY = os.getenv("RAWG_API_KEY", "demo")  # Get from environment or use demo
 STEAM_API_KEY = os.getenv("STEAM_API_KEY", "")
+CIPT_BASE_URL = "https://caniplaythat.com"
 CACHE_TTL = 3600  # 1 hour cache
+COMMUNITY_TELEMETRY_TTL = 21600  # 6 hours reuse window for telemetry snapshot
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY") or os.getenv("CHATGPT_API_KEY")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+USE_LLM_INNOVATION = os.getenv("USE_LLM_INNOVATION", "0").lower() in ("1","true","yes")
+# Opt-in flag to apply heuristic monetisation defaults automatically during scans (off by default)
+AUTO_MONETISATION_DEFAULTS = os.getenv("AUTO_MONETISATION_DEFAULTS", "0").lower() in ("1","true","yes")
 
 # Caching configuration
 API_CACHE_TTL = 1800  # 30 minutes for API responses
@@ -54,53 +74,138 @@ def set_cached_response(cache_key: str, response: dict, ttl: int):
     """Cache API response in database"""
     expires_at = time.time() + ttl
     with get_db() as conn:
+        # We don't currently track URL separately (left blank previously); keep placeholder for structure
         conn.execute("""
             INSERT OR REPLACE INTO api_cache (id, url, response, expires_at)
-            VALUES (?, '', ?, datetime(?, 'unixepoch'))
-        """, (cache_key, json.dumps(response), expires_at))
+            VALUES (?, ?, ?, datetime(?, 'unixepoch'))
+        """, (cache_key, 'api', json.dumps(response), expires_at))
         conn.commit()
+
+# --- LLM helper (requests-based) ---
+def _call_openai_chat(messages: list, model: Optional[str] = None, temperature: float = 0.2, max_tokens: int = 600) -> Optional[str]:
+    if not OPENAI_API_KEY:
+        return None
+    try:
+        url = "https://api.openai.com/v1/chat/completions"
+        headers = {
+            "Authorization": f"Bearer {OPENAI_API_KEY}",
+            "Content-Type": "application/json"
+        }
+        payload = {
+            "model": model or OPENAI_MODEL,
+            "messages": messages,
+            "temperature": temperature,
+            "max_tokens": max_tokens,
+            "response_format": {"type": "json_object"}
+        }
+        resp = requests.post(url, headers=headers, json=payload, timeout=20)
+        resp.raise_for_status()
+        data = resp.json()
+        content = data.get('choices', [{}])[0].get('message', {}).get('content')
+        return content
+    except Exception as e:
+        print(f"OpenAI chat call failed: {e}")
+        return None
+
+def llm_innovation_score(game_id: int, rawg_details: dict) -> Optional[dict]:
+    """Ask an LLM to produce a 0-100 Innovation & Creativity score and structured breakdown from game metadata.
+    Returns dict with fields: overall_score, novelty, mechanic_diversity, emergent_systems, hype_penalty, explanation
+    and persists into game_innovation_metrics.
+    """
+    if not OPENAI_API_KEY:
+        return None
+    name = rawg_details.get('name') or rawg_details.get('slug') or 'Unknown Game'
+    genres = [g.get('name') for g in (rawg_details.get('genres') or []) if isinstance(g, dict)]
+    tags = [t.get('name') for t in (rawg_details.get('tags') or []) if isinstance(t, dict)]
+    description = rawg_details.get('description_raw') or rawg_details.get('description') or ''
+    user_payload = {
+        "name": name,
+        "genres": genres,
+        "tags": tags,
+        "description": description[:6000]
+    }
+    system_msg = {
+        "role": "system",
+        "content": (
+            "You are a careful rater for video game Innovation & Creativity. "
+            "Only use the provided info. Output strict JSON with keys: overall_score (0-100), novelty (0-100), "
+            "mechanic_diversity (0-100), emergent_systems (0-100), hype_penalty (0-100), explanation (string). "
+            "Do not invent features not implied by text; be conservative."
+        )
+    }
+    user_msg = {
+        "role": "user",
+        "content": json.dumps(user_payload)
+    }
+    content = _call_openai_chat([system_msg, user_msg])
+    if not content:
+        return None
+    try:
+        parsed = json.loads(content)
+        overall = float(parsed.get('overall_score', 0))
+        novelty = float(parsed.get('novelty', 0))
+        mech_div = float(parsed.get('mechanic_diversity', 0))
+        emergent = float(parsed.get('emergent_systems', 0))
+        hype_pen = float(parsed.get('hype_penalty', 0))
+        overall = max(0, min(100, overall))
+        summary = {
+            'llm_model': OPENAI_MODEL,
+            'novelty': novelty,
+            'mechanic_diversity': mech_div,
+            'emergent_systems': emergent,
+            'hype_penalty': hype_pen,
+            'explanation': parsed.get('explanation')
+        }
+        with get_db() as conn:
+            conn.execute(
+                "REPLACE INTO game_innovation_metrics (game_id, tag_divergence, emergent_keywords, hype_penalty, mechanic_diversity, base_score, adjusted_score, summary_json) "
+                "VALUES (?,?,?,?,?,?,?,?)",
+                (game_id, None, None, hype_pen, int(mech_div), None, overall, json.dumps(summary))
+            )
+            conn.commit()
+        return {'overall_score': overall, 'summary': summary}
+    except Exception as e:
+        print(f"LLM innovation parse error: {e}")
+        return None
 
 # API Clients
 class RAWGClient:
     BASE_URL = "https://api.rawg.io/api"
-    
+
     def __init__(self, api_key: str):
         self.api_key = api_key
-    
-    def search_games(self, query: str, page_size: int = 10) -> dict:
-        """Search for games using RAWG API with caching"""
+
+    def search_games(self, query: str, page_size: int = 10, page: int = 1) -> dict:
+        """Search for games using RAWG API with caching and pagination.
+
+        Replaces previous implementation; uses broader search for shorter queries.
+        """
+        page_size = max(1, min(page_size, 40))
+        page = max(1, page)
         url = f"{self.BASE_URL}/games"
         params = {
             "key": self.api_key,
             "search": query,
             "page_size": page_size,
-            "search_precise": True
+            "page": page,
+            "search_precise": True if len(query) > 3 else False
         }
-        
-        # Create cache key
         cache_key = get_cache_key(url, str(params))
-        
-        # Check cache first
         cached_result = get_cached_response(cache_key)
         if cached_result:
-            print(f"Cache hit for search: {query}")
+            print(f"Cache hit for search: '{query}' page={page} size={page_size}")
             return cached_result
-        
         try:
             response = requests.get(url, params=params, timeout=10)
             response.raise_for_status()
             result = response.json()
-            
-            # Cache the result
             set_cached_response(cache_key, result, SEARCH_CACHE_TTL)
             return result
         except requests.RequestException as e:
             print(f"RAWG API error: {e}")
-            # If API key is invalid, return demo games for testing
             if "401" in str(e) or "Unauthorized" in str(e):
                 demo_result = self._get_demo_games(query)
-                # Cache demo result for shorter time
-                set_cached_response(cache_key, demo_result, 300)  # 5 minutes
+                set_cached_response(cache_key, demo_result, 300)
                 return demo_result
             return {"results": []}
     
@@ -287,6 +392,91 @@ class SteamClient:
 rawg_client = RAWGClient(RAWG_API_KEY)
 steam_client = SteamClient(STEAM_API_KEY)
 
+class CIPTClient:
+    """Lightweight scraper client for CanIPlayThat accessibility reviews.
+
+    NOTE: Site does not expose an official public API; this approach scrapes search
+    results and (optionally) review pages. Keep requests minimal and cache results.
+    """
+    SEARCH_URL = f"{CIPT_BASE_URL}/"
+
+    def search_reviews(self, title: str, limit: int = 3) -> list:
+        if BeautifulSoup is None:
+            return []
+        query = title.replace(' ', '+')
+        url = f"{CIPT_BASE_URL}/?s={query}"
+        try:
+            resp = requests.get(url, timeout=10, headers={"User-Agent": "Mozilla/5.0 (compatible; SkyScansBot/0.1)"})
+            resp.raise_for_status()
+        except requests.RequestException as e:
+            print(f"CIPT search error for '{title}': {e}")
+            return []
+        soup = BeautifulSoup(resp.text, 'html.parser')
+        results = []
+        # Heuristic: Accessibility review links often contain 'accessibility-review' or 'accessibility review'
+        for a in soup.select('a'):  # broad, then filter
+            href = a.get('href') or ''
+            text = a.get_text(strip=True) or ''
+            lowered = text.lower()
+            if not href or not text:
+                continue
+            # Filter by game title words presence and accessibility signals
+            title_tokens = [t for t in title.lower().split() if len(t) > 2]
+            if any(tok in lowered for tok in title_tokens) and ('accessibility' in lowered or 'review' in lowered):
+                results.append({
+                    'title': text,
+                    'url': href
+                })
+            if len(results) >= limit:
+                break
+        return results
+
+    def extract_accessibility_score(self, review_url: str) -> dict:
+        """Attempt to extract structured accessibility info from a review page.
+        CIPT pages vary; we approximate a score by counting feature keywords.
+        Returns {'raw_score': int, 'max_score': int, 'features': {...}} or empty dict.
+        """
+        if BeautifulSoup is None:
+            return {}
+        try:
+            resp = requests.get(review_url, timeout=10, headers={"User-Agent": "Mozilla/5.0 (compatible; SkyScansBot/0.1)"})
+            resp.raise_for_status()
+        except requests.RequestException as e:
+            print(f"CIPT review fetch error: {e}")
+            return {}
+        soup = BeautifulSoup(resp.text, 'html.parser')
+        text = soup.get_text(separator=' ').lower()
+        # Simple keyword buckets
+        feature_keywords = {
+            'captions': ['subtitle', 'captions', 'subtitles'],
+            'remapping': ['remap', 'binding', 'key binding', 'rebinding', 'customize controls'],
+            'difficulty': ['difficulty', 'assist', 'mode', 'story mode'],
+            'motor': ['toggle', 'hold', 'press', 'motor'],
+            'visual': ['colorblind', 'contrast', 'text size', 'ui scale'],
+            'audio': ['audio description', 'text to speech', 'tts'],
+            'cognitive': ['puzzle hint', 'cognitive', 'simplified']
+        }
+        feature_hits = {}
+        total_hits = 0
+        for feature, keys in feature_keywords.items():
+            hits = sum(1 for k in keys if k in text)
+            if hits:
+                feature_hits[feature] = hits
+                total_hits += hits
+        if not total_hits:
+            return {}
+        # Normalize to pseudo score out of 100 (cap at 100)
+        # Assume each hit ~5 points, up to 20 hits => 100
+        raw_score = min(100, total_hits * 5)
+        return {
+            'raw_score': raw_score,
+            'max_score': 100,
+            'features': feature_hits,
+            'source': review_url
+        }
+
+cipt_client = CIPTClient()
+
 @app.on_event("startup")
 async def startup_event():
     try:
@@ -298,7 +488,10 @@ async def startup_event():
         traceback.print_exc()
 
 # Database setup
-DATABASE_URL = "skyscans_games.db"
+BASE_DIR = os.path.dirname(__file__)
+# Prefer the repo root database to avoid duplicate files when running from different CWDs
+REPO_ROOT = os.path.abspath(os.path.join(BASE_DIR, os.pardir))
+DATABASE_URL = os.environ.get("DATABASE_URL") or os.path.join(REPO_ROOT, "skyscans_games.db")
 
 @contextmanager
 def get_db():
@@ -316,15 +509,35 @@ def init_db():
             CREATE TABLE IF NOT EXISTS games (
                 id INTEGER PRIMARY KEY,
                 title TEXT NOT NULL,
+                release_year INTEGER,
+                release_date TEXT,
+                release_date_source TEXT,
+                release_date_notes TEXT,
                 generation INTEGER,
                 platform TEXT,
                 engine TEXT,
                 rawg_id INTEGER,
                 steam_id INTEGER,
+                cover_image TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )
         ''')
+        # Ensure new columns exist (migrations)
+        try:
+            _cols = [c[1] for c in conn.execute("PRAGMA table_info(games)").fetchall()]
+            if 'release_year' not in _cols:
+                conn.execute("ALTER TABLE games ADD COLUMN release_year INTEGER")
+            if 'release_date' not in _cols:
+                conn.execute("ALTER TABLE games ADD COLUMN release_date TEXT")
+            if 'release_date_source' not in _cols:
+                conn.execute("ALTER TABLE games ADD COLUMN release_date_source TEXT")
+            if 'release_date_notes' not in _cols:
+                conn.execute("ALTER TABLE games ADD COLUMN release_date_notes TEXT")
+            if 'cover_image' not in _cols:
+                conn.execute("ALTER TABLE games ADD COLUMN cover_image TEXT")
+        except Exception as _e:
+            print(f"cover_image migration notice: {_e}")
 
         # Scores table
         conn.execute('''
@@ -340,20 +553,178 @@ def init_db():
                 accessibility_score REAL,
                 overall_score REAL,
                 reasoning TEXT,
+                -- New rubric explicit columns (may be NULL for legacy rows)
+                core_gameplay_score REAL,
+                story_immersion_score REAL,
+                presentation_score REAL,
+                technical_performance_score REAL,
+                innovation_creativity_score REAL,
+                community_longevity_score REAL,
+                scoring_version INTEGER,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 FOREIGN KEY (game_id) REFERENCES games (id)
             )
         ''')
+        # Migrate missing columns (if existing DB predates rubric change)
+        existing_cols = [c[1] for c in conn.execute("PRAGMA table_info(scores)").fetchall()]
+        required_new = [
+            ('core_gameplay_score','REAL'),('story_immersion_score','REAL'),('presentation_score','REAL'),
+            ('technical_performance_score','REAL'),('innovation_creativity_score','REAL'),('community_longevity_score','REAL'),
+            ('scoring_version','INTEGER')
+        ]
+        for col, ctype in required_new:
+            if col not in existing_cols:
+                try:
+                    conn.execute(f"ALTER TABLE scores ADD COLUMN {col} {ctype}")
+                except Exception as e:
+                    print(f"Migration warning (scores add {col}): {e}")
 
-        # Cache table for API responses
+        # Cache table for API responses (id is md5 hex string -> needs TEXT type)
+        def ensure_api_cache_schema():
+            info = conn.execute("PRAGMA table_info(api_cache)").fetchall()
+            recreate = False
+            if info:
+                for col in info:
+                    # col format: (cid, name, type, notnull, dflt_value, pk)
+                    if col[1] == 'id' and col[2].lower() != 'text':
+                        recreate = True
+                        break
+            if recreate:
+                print("Migrating api_cache table to TEXT primary key for cache keys")
+                conn.execute("DROP TABLE api_cache")
+                info = []
+            if not info or recreate:
+                conn.execute('''
+                    CREATE TABLE IF NOT EXISTS api_cache (
+                        id TEXT PRIMARY KEY,
+                        url TEXT NOT NULL,
+                        response TEXT,
+                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        expires_at TIMESTAMP
+                    )
+                ''')
+
+        ensure_api_cache_schema()
+
+        # Accessibility review cache table
         conn.execute('''
-            CREATE TABLE IF NOT EXISTS api_cache (
+            CREATE TABLE IF NOT EXISTS accessibility_reviews (
                 id INTEGER PRIMARY KEY,
-                url TEXT NOT NULL,
-                response TEXT,
+                game_id INTEGER NOT NULL,
+                source_url TEXT NOT NULL,
+                raw_score REAL,
+                max_score REAL,
+                features_json TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                expires_at TIMESTAMP
+                FOREIGN KEY (game_id) REFERENCES games(id)
+            )
+        ''')
+        # Overrides table (monetisation & performance adjustments)
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS score_overrides (
+                id INTEGER PRIMARY KEY,
+                game_id INTEGER NOT NULL UNIQUE,
+                monetisation_types TEXT,
+                monetisation_notes TEXT,
+                performance_json TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (game_id) REFERENCES games(id)
+            )
+        ''')
+        # Community telemetry table (stores raw snapshot from RAWG-based heuristics)
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS game_community_telemetry (
+                game_id INTEGER PRIMARY KEY,
+                ratings_count INTEGER,
+                added_count INTEGER,
+                updated_rawg_at TEXT,
+                steam_ccu INTEGER,
+                steam_reviews_total INTEGER,
+                confidence_score REAL,
+                raw_payload TEXT,
+                steam_payload TEXT,
+                last_scan_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (game_id) REFERENCES games(id)
+            )
+        ''')
+        # Migration for newly added columns if table pre-existed
+        existing_cols = [c[1] for c in conn.execute("PRAGMA table_info(game_community_telemetry)").fetchall()]
+        for new_col, ctype in [
+            ("steam_ccu","INTEGER"),("steam_reviews_total","INTEGER"),("confidence_score","REAL"),("steam_payload","TEXT"),
+            ("steam_positive_reviews","INTEGER"),("steam_negative_reviews","INTEGER"),("steam_review_score","INTEGER"),
+            ("steam_weighted_vote","REAL"),("steam_achievements_sampled","INTEGER"),("steam_achievements_avg_percent","REAL")
+        ]:
+            if new_col not in existing_cols:
+                try:
+                    conn.execute(f"ALTER TABLE game_community_telemetry ADD COLUMN {new_col} {ctype}")
+                except Exception as e:
+                    print(f"Migration (game_community_telemetry add {new_col}) warning: {e}")
+        # MVP new intelligence tables
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS game_innovation_metrics (
+                game_id INTEGER PRIMARY KEY,
+                tag_divergence REAL,
+                emergent_keywords INTEGER,
+                hype_penalty INTEGER,
+                mechanic_diversity INTEGER,
+                base_score REAL,
+                adjusted_score REAL,
+                summary_json TEXT,
+                computed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (game_id) REFERENCES games(id)
+            )
+        ''')
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS game_accessibility_features (
+                id INTEGER PRIMARY KEY,
+                game_id INTEGER NOT NULL,
+                feature_key TEXT NOT NULL,
+                present INTEGER NOT NULL,
+                confidence REAL,
+                evidence TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(game_id, feature_key),
+                FOREIGN KEY (game_id) REFERENCES games(id)
+            )
+        ''')
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS game_life_support_inference (
+                game_id INTEGER PRIMARY KEY,
+                inferred_status TEXT,
+                confidence REAL,
+                last_patch_age_days INTEGER,
+                ccu_value INTEGER,
+                evidence_json TEXT,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (game_id) REFERENCES games(id)
+            )
+        ''')
+        # Life support table (live service status / eternal support)
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS game_life_support (
+                game_id INTEGER PRIMARY KEY,
+                support_status TEXT, -- unknown | active | eternal | sunset | offline
+                last_update_date TEXT,
+                next_update_hint TEXT,
+                notes TEXT,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (game_id) REFERENCES games(id)
+            )
+        ''')
+        # Archive table for legacy or alternative scoring versions
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS scores_archive (
+                id INTEGER PRIMARY KEY,
+                game_id INTEGER NOT NULL,
+                scoring_version INTEGER NOT NULL,
+                payload_json TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE(game_id, scoring_version),
+                FOREIGN KEY (game_id) REFERENCES games(id)
             )
         ''')
 
@@ -400,114 +771,399 @@ def init_db():
                 ))
 
         conn.commit()
+        conn.execute('''CREATE UNIQUE INDEX IF NOT EXISTS idx_games_rawg_id ON games(rawg_id)''')
+
+# ================= MVP Heuristic Intelligence (Innovation, Accessibility, Life Support) =================
+EMERGENT_KEYWORDS = [
+    'procedural','emergent','sandbox','systemic','simulation','dynamic ai','modding','physics-driven','roguelike','roguelite','ecosystem'
+]
+HYPE_KEYWORDS = [
+    'revolutionary','groundbreaking','never before','ultimate','definitive','unparalleled','first ever','game-changing'
+]
+ACCESSIBILITY_REGEX = {
+    'subtitles': re.compile(r'\bsubtitles?\b', re.IGNORECASE),
+    'colorblind_support': re.compile(r'color.?blind|dalton', re.IGNORECASE),
+    'remap_keyboard': re.compile(r'(rebind|remap).+(key|keyboard|control)', re.IGNORECASE),
+    'remap_controller': re.compile(r'(controller).+(remap|rebind)', re.IGNORECASE),
+    'font_scaling': re.compile(r'(font).+(size|scal)', re.IGNORECASE),
+    'contrast_modes': re.compile(r'high.?contrast', re.IGNORECASE)
+}
+
+def compute_innovation_metrics(game_id: int, rawg_details: dict) -> dict:
+    """MVP heuristic: approximate innovation using RAWG tags/genres/description.
+    Stores row in game_innovation_metrics and returns adjusted score & summary.
+    """
+    try:
+        desc = rawg_details.get('description_raw') or rawg_details.get('description') or ''
+        tags = rawg_details.get('tags') or []
+        tag_names = [t.get('name') for t in tags if isinstance(t, dict) and t.get('name')]
+        genres = rawg_details.get('genres') or []
+        genre_names = [g.get('name') for g in genres if isinstance(g, dict) and g.get('name')]
+        full_text = ' '.join(filter(None, [desc] + tag_names + genre_names)).lower()
+        emergent_hits = sum(1 for k in EMERGENT_KEYWORDS if k in full_text)
+        hype_hits = sum(1 for k in HYPE_KEYWORDS if k in full_text)
+        mechanic_diversity = min(30, len(set(tag_names)))
+        baseline = {'action','adventure','rpg','indie','strategy','simulation'}
+        overlap = len(baseline.intersection({(g or '').lower() for g in genre_names}))
+        tag_divergence = 1 - (overlap / max(1,len(genre_names))) if genre_names else 0.5
+        base_score = (
+            min(1, tag_divergence) * 40 +
+            min(emergent_hits,10) * 3 +
+            (mechanic_diversity/30) * 25
+        ) - hype_hits * 1.5
+        adjusted = max(0, min(100, base_score))
+        summary = {
+            'tag_divergence': round(tag_divergence,3),
+            'emergent_keywords': emergent_hits,
+            'hype_penalty': hype_hits,
+            'mechanic_diversity': mechanic_diversity,
+            'explanation': 'divergence*40 + emergent*3 + diversityScaled*25 - hype*1.5 (clamped)'
+        }
+        with get_db() as conn:
+            conn.execute("REPLACE INTO game_innovation_metrics (game_id, tag_divergence, emergent_keywords, hype_penalty, mechanic_diversity, base_score, adjusted_score, summary_json) VALUES (?,?,?,?,?,?,?,?)",
+                         (game_id, tag_divergence, emergent_hits, hype_hits, mechanic_diversity, base_score, adjusted, json.dumps(summary)))
+            conn.commit()
+        return {'adjusted_score': adjusted, 'summary': summary}
+    except Exception as e:
+        print(f"Innovation heuristic error: {e}")
+        return {'adjusted_score': None, 'summary': {'error': str(e)}}
+
+def infer_accessibility_features(game_id: int, rawg_details: dict) -> dict:
+    desc = (rawg_details.get('description_raw') or rawg_details.get('description') or '').lower()
+    results = {}
+    for key, rx in ACCESSIBILITY_REGEX.items():
+        present = 1 if rx.search(desc) else 0
+        results[key] = present
+    positives = sum(results.values())
+    confidence = round(0.4 + (positives / (len(results) or 1)) * 0.6,2)
+    try:
+        with get_db() as conn:
+            for key, present in results.items():
+                conn.execute("REPLACE INTO game_accessibility_features (game_id, feature_key, present, confidence, evidence) VALUES (?,?,?,?,?)",
+                             (game_id, key, present, confidence, None))
+            conn.commit()
+    except Exception as e:
+        print(f"Accessibility feature persist error: {e}")
+    core = ['subtitles','colorblind_support','remap_keyboard','remap_controller']
+    core_present = sum(results.get(c,0) for c in core)
+    core_score = core_present / max(1,len(core))
+    qol_keys = [k for k in results.keys() if k not in core]
+    qol_present = sum(results.get(q,0) for q in qol_keys)
+    qol_score = qol_present / max(1,len(qol_keys))
+    heuristic_score = round((core_score*0.7 + qol_score*0.3) * 100 * confidence,1)
+    return {'features': results, 'confidence': confidence, 'heuristic_score': heuristic_score}
+
+def infer_life_support_status(game_id: int, rawg_details: dict, telemetry: Optional[dict]) -> dict:
+    updated_rawg_at = rawg_details.get('updated') or rawg_details.get('last_updated') or rawg_details.get('updated_at')
+    age_days = None
+    if updated_rawg_at:
+        try:
+            dt = datetime.fromisoformat(updated_rawg_at.replace('Z','+00:00')) if 'T' in updated_rawg_at else datetime.fromisoformat(updated_rawg_at)
+            age_days = (datetime.utcnow() - dt).days
+        except Exception:
+            pass
+    ccu = telemetry.get('steam_ccu') if telemetry else None
+    status = 'unknown'
+    confidence = 0.4
+    if age_days is not None:
+        if age_days <= 45 and (ccu or 0) > 5000:
+            status = 'eternal'; confidence = 0.7
+        elif age_days <= 120:
+            status = 'active'; confidence = 0.6
+        elif age_days > 400 and (ccu or 0) < 50:
+            status = 'sunset'; confidence = 0.55
+    if ccu is not None and ccu < 5 and (age_days or 999) > 600:
+        status = 'offline'; confidence = 0.65
+    evidence = {'age_days': age_days, 'ccu': ccu}
+    try:
+        with get_db() as conn:
+            conn.execute("REPLACE INTO game_life_support_inference (game_id, inferred_status, confidence, last_patch_age_days, ccu_value, evidence_json) VALUES (?,?,?,?,?,?)",
+                         (game_id, status, confidence, age_days, ccu, json.dumps(evidence)))
+            conn.commit()
+    except Exception as e:
+        print(f"Life support inference persist error: {e}")
+    return {'status': status, 'confidence': confidence, 'evidence': evidence}
+
+# =========================================================================================================
 
 def generate_scores_from_api(game_data: dict, steam_data: dict = None) -> dict:
-    """Generate scores based on RAWG and Steam API data"""
-    
-    # Base scores from RAWG metacritic score
-    metacritic = game_data.get("metacritic", 70)
-    reviews_score = min(100, max(0, metacritic))
-    
-    # Graphics score based on release year and platforms
-    release_year = int(game_data.get("released", "2020")[:4]) if game_data.get("released") else 2020
-    graphics_base = min(100, 60 + (release_year - 2010) * 2)  # Older games get lower base score
-    graphic_score = min(100, graphics_base + (metacritic - 70) * 0.3)
-    
-    # Microtransactions score - assume good unless we have Steam data indicating otherwise
-    microtransactions_score = 85  # Default good score
-    if steam_data and steam_data.get("price_overview"):
-        # If game has DLC or in-game purchases, slightly lower score
-        microtransactions_score = 80
-    
-    # Game mechanics score based on user ratings and critic scores
-    rating = game_data.get("rating", 3.5)
-    game_mechanics_score = min(100, max(0, (rating * 20) + (metacritic * 0.3)))
-    
-    # Completeness score based on game length and content
-    completeness_score = 80  # Default good score
-    if game_data.get("playtime"):
-        playtime = game_data.get("playtime", 0)
-        if playtime > 20:
-            completeness_score = 90
-        elif playtime > 10:
-            completeness_score = 85
-        else:
-            completeness_score = 75
-    
-    # Story quality score - estimate based on genre and critic reception
-    genres = game_data.get("genres", [])
-    genre_names = [g.get("name", "").lower() for g in genres]
-    story_score = 75  # Default
-    if "rpg" in genre_names or "adventure" in genre_names:
-        story_score = min(100, metacritic + 5)  # RPGs and adventures often have better stories
-    elif "action" in genre_names:
-        story_score = min(100, metacritic - 5)  # Action games may focus less on story
-    
-    # Accessibility score - basic estimation
-    accessibility_score = 70  # Default moderate score
-    if game_data.get("esrb_rating"):
-        # Games with ESRB ratings tend to have better accessibility considerations
-        accessibility_score = 75
-    
-    # Overall score as weighted average
-    overall_score = (
-        reviews_score * 0.25 +
-        graphic_score * 0.15 +
-        microtransactions_score * 0.10 +
-        game_mechanics_score * 0.20 +
-        completeness_score * 0.15 +
-        story_score * 0.10 +
-        accessibility_score * 0.05
+    """Generate scores based on RAWG + simple heuristics following new rubric.
+
+    Rubric Groups (weights to 100):
+      Core Gameplay 25%
+      Story & Immersion 20%
+      Presentation 15%
+      Technical Performance 15%
+      Completeness 10% (kept as its own score)
+      Innovation & Creativity 10%
+      Community & Longevity 5%
+    Informational (NOT scored): Reviews (Metacritic), Accessibility, Monetisation.
+    """
+    # --- Normalize raw inputs ---
+    raw_metacritic = game_data.get("metacritic")
+    if not isinstance(raw_metacritic, (int, float)):
+        raw_metacritic = 70  # neutral fallback
+    metacritic = max(0, min(100, int(raw_metacritic)))
+
+    rating_raw = game_data.get("rating")
+    if not isinstance(rating_raw, (int, float)):
+        rating_raw = 0.0
+    rating = max(0.0, min(5.0, float(rating_raw)))
+
+    release_year = 2020
+    if isinstance(game_data.get("released"), str) and len(game_data["released"]) >= 4:
+        try:
+            release_year = int(game_data["released"][:4])
+        except ValueError:
+            pass
+
+    playtime_val = game_data.get("playtime")
+    if not isinstance(playtime_val, (int, float)):
+        playtime_val = 0
+    playtime = playtime_val or 0
+
+    genres = game_data.get("genres") or []
+    if not isinstance(genres, list):
+        genres = []
+    genre_names = []
+    for g in genres:
+        if isinstance(g, dict):
+            nm = g.get("name")
+            if isinstance(nm, str):
+                genre_names.append(nm.lower())
+
+    # --- Informational Scores (NOT used directly in weighted overall) ---
+    reviews_score = metacritic  # Shown only, excluded from weighted total per new rubric.
+    accessibility_score = 75 if game_data.get("esrb_rating") else 70  # May be augmented later (CIPT)
+
+    # --- Completeness (10%) ---
+    if playtime > 40:
+        completeness_score = 92
+    elif playtime > 25:
+        completeness_score = 90
+    elif playtime > 15:
+        completeness_score = 85
+    elif playtime > 8:
+        completeness_score = 80
+    elif playtime > 2:
+        completeness_score = 75
+    else:
+        completeness_score = 70
+
+    # --- Core Gameplay (25%) ---
+    # Mechanics & Controls (10): rating-derived
+    mechanics_controls = min(100, (rating / 5) * 100)
+    # Balance (7): heuristic using difference between metacritic & scaled rating
+    rating_scaled = mechanics_controls
+    balance_gap = abs(rating_scaled - metacritic)
+    balance = max(50, 100 - balance_gap * 0.6)  # larger disagreement lowers balance
+    balance = min(100, balance)
+    # Replayability (8): based on playtime + genre
+    replayability_base = 60
+    if playtime > 30:
+        replayability_base += 15
+    elif playtime > 15:
+        replayability_base += 10
+    if any(g in genre_names for g in ["rpg", "roguelike", "strategy"]):
+        replayability_base += 10
+    if "adventure" in genre_names:
+        replayability_base += 5
+    replayability = max(50, min(100, replayability_base))
+    core_gameplay_score = (
+        mechanics_controls * (10/25) +
+        balance * (7/25) +
+        replayability * (8/25)
     )
-    
-    # Generate reasoning based on the data
-    metacritic_count = game_data.get('metacritic_count', 'multiple')
-    data_source_note = "Note: Scores are based on data from RAWG.io, which aggregates information from various sources. Actual scores may vary slightly from official sources."
-    
+
+    # --- Story & Immersion (20%) ---
+    # Narrative Quality (10): metacritic + genre influence
+    narrative = metacritic
+    if any(g in genre_names for g in ["rpg", "adventure"]):
+        narrative = min(100, narrative + 5)
+    # Worldbuilding (5)
+    worldbuilding = 70
+    if "rpg" in genre_names:
+        worldbuilding += 15
+    elif "adventure" in genre_names:
+        worldbuilding += 10
+    worldbuilding = min(100, worldbuilding)
+    # Character Development (5)
+    character_dev = 65
+    if any(g in genre_names for g in ["rpg", "adventure"]):
+        character_dev += 15
+    character_dev = min(95, character_dev)
+    story_immersion_score = (
+        narrative * (10/20) +
+        worldbuilding * (5/20) +
+        character_dev * (5/20)
+    )
+
+    # --- Presentation (15%) ---
+    # Graphics & Art (6): reuse prior heuristic
+    graphics_base = min(100, 60 + (release_year - 2010) * 2)
+    graphics_art = min(100, graphics_base + (metacritic - 70) * 0.3)
+    # Sound & Music (5): rating & metacritic blend
+    sound_music = min(100, (rating_scaled * 0.5) + (metacritic * 0.5))
+    # Immersion Factor (4): average of narrative & graphics + small genre bump
+    immersion_factor = min(100, (narrative + graphics_art) / 2 + (5 if "adventure" in genre_names else 0))
+    presentation_score = (
+        graphics_art * (6/15) +
+        sound_music * (5/15) +
+        immersion_factor * (4/15)
+    )
+
+    # --- Technical Performance (15%) ---
+    # Frame Stability (6): newer titles may still patch; assume baseline 80 then adjust by rating
+    frame_stability = min(100, 75 + (rating * 3))
+    # Stability & Reliability (4): rating & metacritic consistency
+    stability_reliability = max(50, min(95, 70 + (min(rating_scaled, metacritic) - 60) * 0.3))
+    # Optimisation (5): release year & playtime (longer titles may have heavier loads)
+    optimisation = 78
+    if release_year >= 2023:
+        optimisation = min(100, optimisation + 5)
+    if playtime > 40:
+        optimisation -= 3
+    optimisation = max(60, min(100, optimisation))
+    technical_performance_score = (
+        frame_stability * (6/15) +
+        stability_reliability * (4/15) +
+        optimisation * (5/15)
+    )
+
+    # --- Innovation & Creativity (10%) ---
+    title = game_data.get("name") or ""
+    sequel_penalty = 0
+    if any(token in title.lower() for token in [" ii", " iii", " iv", " v", " 2", " 3", " 4", ":"]):
+        sequel_penalty = 8
+    originality = max(50, min(95, 80 - sequel_penalty + (5 if "roguelike" in genre_names else 0)))
+    genre_impact = 60
+    if metacritic >= 90:
+        genre_impact += 15
+    player_expression = 55
+    if any(g in genre_names for g in ["rpg", "simulation", "strategy"]):
+        player_expression += 20
+    innovation_creativity_score = (
+        originality * (5/10) +
+        genre_impact * (3/10) +
+        player_expression * (2/10)
+    )
+
+    # --- Community & Longevity (5%) ---
+    multiplayer_online = 60  # Placeholder baseline
+    community_engagement = 55
+    longevity = 50 + (10 if playtime > 30 else 0) + (5 if rating > 4 else 0)
+    longevity = min(90, longevity)
+    community_longevity_score = (
+        multiplayer_online * (2/5) +
+        community_engagement * (2/5) +
+        longevity * (1/5)
+    )
+
+    # --- Monetisation (informational) ---
+    monetisation_notes = "Unknown / not evaluated"  # Could integrate Steam / store data later
+
+    # --- Weighted Overall (exclude reviews & accessibility & monetisation) ---
+    overall_score = (
+        core_gameplay_score * 0.25 +
+        story_immersion_score * 0.20 +
+        presentation_score * 0.15 +
+        technical_performance_score * 0.15 +
+        completeness_score * 0.10 +
+        innovation_creativity_score * 0.10 +
+        community_longevity_score * 0.05
+    )
+
+    metacritic_count = game_data.get('metacritic_count') or 'multiple'
+    data_source_note = "Note: Rubric uses heuristic estimations from RAWG data; real performance, balance, and monetisation may differ."
+
     reasoning = {
         "reviews_score": {
-            "short": f"RAWG-reported Metacritic: {metacritic}/100",
-            "detailed": f"Based on critic reviews aggregated by RAWG.io. The game received a score of {metacritic}/100 from {metacritic_count} critic reviews. {data_source_note}"
-        },
-        "graphic_score": {
-            "short": f"Graphics quality for {release_year} release",
-            "detailed": f"Graphics score estimated based on release year ({release_year}) and critic reception from RAWG data. Modern games receive higher base scores, adjusted by critic feedback."
-        },
-        "microtransactions_score": {
-            "short": "Estimated based on platform and pricing model",
-            "detailed": "Score based on the game's monetization strategy as reported by available data sources. Games with straightforward pricing models receive higher scores."
-        },
-        "game_mechanics_score": {
-            "short": f"User rating: {rating}/5 stars (RAWG)",
-            "detailed": f"Gameplay quality assessed through user ratings ({rating}/5) from RAWG.io and critic reception. Combines community feedback with professional analysis."
+            "short": f"Metacritic (informational): {metacritic}/100",
+            "detailed": f"Critic aggregate (not counted in weighted score). Source: RAWG / Metacritic. {metacritic_count} critic references."
         },
         "completeness_score": {
-            "short": f"Estimated playtime: {game_data.get('playtime', 'Unknown')} hours",
-            "detailed": f"Content completeness evaluated based on estimated playtime and game scope from RAWG data. Longer games with more content receive higher scores."
-        },
-        "story_quality_score": {
-            "short": f"Genre-based story quality estimate",
-            "detailed": f"Story quality estimated based on game genre ({', '.join(genre_names) if genre_names else 'Unknown'}) and overall critic reception from RAWG. RPGs and adventures typically have stronger narratives."
+            "short": f"Estimated playtime: {playtime or 'Unknown'} hours",
+            "detailed": "Content completeness evaluated from estimated playtime and genre scope. Longer or deeper games trend higher."
         },
         "accessibility_score": {
-            "short": "Basic accessibility assessment",
-            "detailed": "Accessibility score based on ESRB rating and general game design principles from available data. Modern games with accessibility features receive higher scores."
+            "short": "Accessibility (informational)",
+            "detailed": "Reported ESRB present. Advanced feature detection pending (subtitles, remapping, difficulty scaling, colorblind, screen reader, audio cues). Not counted in weighted score yet." 
+        },
+        "core_gameplay": {
+            "short": f"Core Gameplay: {core_gameplay_score:.1f}/100",
+            "detailed": {
+                "mechanics_controls": mechanics_controls,
+                "balance": balance,
+                "replayability": replayability,
+                "explanation": "Aggregated from mechanics, balance consistency, and replayability signals (genres & playtime)."}
+        },
+        "story_immersion": {
+            "short": f"Story & Immersion: {story_immersion_score:.1f}/100",
+            "detailed": {
+                "narrative_quality": narrative,
+                "worldbuilding": worldbuilding,
+                "character_development": character_dev,
+                "explanation": "Heuristic narrative estimate using genres (RPG/Adventure boost) plus critic sentiment."}
+        },
+        "presentation": {
+            "short": f"Presentation: {presentation_score:.1f}/100",
+            "detailed": {
+                "graphics_art": graphics_art,
+                "sound_music": sound_music,
+                "immersion_factor": immersion_factor,
+                "explanation": "Blends visual fidelity proxy, audio, and atmospheric cohesion."}
+        },
+        "technical_performance": {
+            "short": f"Technical Performance: {technical_performance_score:.1f}/100",
+            "detailed": {
+                "frame_stability": frame_stability,
+                "stability_reliability": stability_reliability,
+                "optimisation": optimisation,
+                "explanation": "Approximation (no direct telemetry). Uses rating, release year, and generic assumptions."}
+        },
+        "innovation_creativity": {
+            "short": f"Innovation & Creativity: {innovation_creativity_score:.1f}/100",
+            "detailed": {
+                "originality": originality,
+                "genre_impact": genre_impact,
+                "player_expression": player_expression,
+                "explanation": "Sequel detection & genre diversity heuristics."}
+        },
+        "community_longevity": {
+            "short": f"Community & Longevity: {community_longevity_score:.1f}/100",
+            "detailed": {
+                "multiplayer_online": multiplayer_online,
+                "community_engagement": community_engagement,
+                "longevity": longevity,
+                "explanation": "Placeholder scoring until explicit community metrics integrated."}
+        },
+        "monetisation": {
+            "short": "Monetisation (informational)",
+            "detailed": monetisation_notes
         },
         "overall_score": {
-            "short": f"Weighted average: {overall_score:.1f}/100",
-            "detailed": f"Overall score calculated as a weighted average of all metrics using data from RAWG.io. {data_source_note}"
+            "short": f"Weighted Overall: {overall_score:.1f}/100",
+            "detailed": f"Weighted aggregation of rubric categories (excludes Reviews, Accessibility, Monetisation). {data_source_note}"
         }
     }
-    
+
     return {
-        "reviews_score": round(reviews_score, 1),
-        "graphic_score": round(graphic_score, 1),
-        "microtransactions_score": round(microtransactions_score, 1),
-        "game_mechanics_score": round(game_mechanics_score, 1),
+        # Legacy fields (kept for frontend compatibility; some repurposed):
+        "reviews_score": round(reviews_score, 1),  # informational
+        "graphic_score": round(presentation_score, 1),  # repurposed => presentation aggregate
+        "microtransactions_score": round(technical_performance_score, 1),  # repurposed => technical performance
+        "game_mechanics_score": round(core_gameplay_score, 1),  # repurposed => core gameplay
         "completeness_score": round(completeness_score, 1),
-        "story_quality_score": round(story_score, 1),
-        "accessibility_score": round(accessibility_score, 1),
+        "story_quality_score": round(story_immersion_score, 1),  # repurposed => story & immersion
+        "accessibility_score": round(accessibility_score, 1),  # informational
         "overall_score": round(overall_score, 1),
+        # New explicit category scores (added for future UI updates):
+        "core_gameplay_score": round(core_gameplay_score, 1),
+        "story_immersion_score": round(story_immersion_score, 1),
+        "presentation_score": round(presentation_score, 1),
+        "technical_performance_score": round(technical_performance_score, 1),
+        "innovation_creativity_score": round(innovation_creativity_score, 1),
+        "community_longevity_score": round(community_longevity_score, 1),
         "reasoning": reasoning
     }
 # Initialize database on startup
@@ -516,19 +1172,54 @@ def generate_scores_from_api(game_data: dict, steam_data: dict = None) -> dict:
 # CORS for frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000"],  # React dev server
+    allow_origins=["http://localhost:3000", "http://localhost:3001"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Simple request logging middleware (debugging 404 issues)
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    start = time.time()
+    response = await call_next(request)
+    duration_ms = int((time.time() - start) * 1000)
+    print(f"[REQ] {request.method} {request.url.path} -> {response.status_code} ({duration_ms} ms)")
+    return response
+
+# Custom 404 handler to list available routes when a path is not found
+@app.exception_handler(StarletteHTTPException)
+async def custom_http_exception_handler(request: Request, exc: StarletteHTTPException):
+    if exc.status_code == 404:
+        routes = []
+        for r in app.router.routes:
+            try:
+                path = getattr(r, 'path', None)
+                methods = list(getattr(r, 'methods', []) or [])
+                if path and methods:
+                    routes.append({"path": path, "methods": methods})
+            except Exception:
+                continue
+        return JSONResponse(status_code=404, content={
+            "detail": "Not Found",
+            "requested_path": request.url.path,
+            "hint": "Verify the path and HTTP method. See 'routes' for valid endpoints.",
+            "routes": routes
+        })
+    # Fall back to default for other statuses
+    return JSONResponse(status_code=exc.status_code, content={"detail": exc.detail})
 class Game(BaseModel):
     id: int
     title: str
+    release_year: Optional[int] = None
+    release_date: Optional[str] = None
     generation: Optional[int] = None
     platform: Optional[str] = None
     engine: Optional[str] = None
     rawg_id: Optional[int] = None
     steam_id: Optional[int] = None
+    cover_image: Optional[str] = None
+    platforms: Optional[List[str]] = None
 
 class ScoreMetrics(BaseModel):
     reviews_score: float
@@ -540,54 +1231,218 @@ class ScoreMetrics(BaseModel):
     accessibility_score: float
     overall_score: float
     reasoning: dict
+    # New rubric v2 fields (optional for backward compatibility)
+    core_gameplay_score: Optional[float] = None
+    story_immersion_score: Optional[float] = None
+    presentation_score: Optional[float] = None
+    technical_performance_score: Optional[float] = None
+    innovation_creativity_score: Optional[float] = None
+    community_longevity_score: Optional[float] = None
+    scoring_version: Optional[int] = None
 
 class GameWithScores(BaseModel):
     game: Game
     scores: Optional[ScoreMetrics] = None
 
+SCORING_VERSION = 2
+
+# --- Monetisation classification helper (server-side for consistent UI)
+import re
+def classify_monetisation(details: dict) -> dict:
+    try:
+        types = details.get('types') if isinstance(details, dict) else None
+        notes = details.get('notes') if isinstance(details, dict) else None
+        types_list = [t for t in (types if isinstance(types, list) else []) if isinstance(t, str)]
+        notes_str = notes if isinstance(notes, str) else ''
+        # Combine text for simpler negation handling
+        joined = (' | '.join(types_list) + ' | ' + notes_str).lower()
+
+        # Explicit negatives
+        explicit_no_mtx = (
+            'no microtransaction' in joined or 'no mtx' in joined
+        )
+        explicit_p2w_no = (
+            'p2w: no' in joined or 'no pay to win' in joined or 'no pay-to-win' in joined or 'no p2w' in joined or 'not pay to win' in joined
+        )
+
+        # Positive MTX signals (ignore negated variants like 'no loot boxes', 'no battle pass')
+        has_mtx_tokens = [
+            ('battle pass', not ('no battle pass' in joined)),
+            ('item shop', True),
+            ('microtransaction', not ('no microtransaction' in joined)),
+            (' mtx', not ('no mtx' in joined)),
+            ('in-app', True),
+            (' iap', True),
+            ('loot box', not ('no loot box' in joined) and not ('no loot boxes' in joined)),
+            ('gacha', True)
+        ]
+        has_mtx = any(tok in joined and cond for tok, cond in has_mtx_tokens)
+
+        # Positive P2W signals; avoid negations. If explicit_p2w_no, treat as not P2W.
+        if explicit_p2w_no:
+            has_p2w = False
+        else:
+            has_p2w = (
+                'p2w: yes' in joined or
+                (('pay-to-win' in joined or 'pay to win' in joined) and not ('no pay-to-win' in joined or 'no pay to win' in joined or 'not pay to win' in joined)) or
+                'gameplay advantage' in joined or 'stat boost' in joined or 'xp boost' in joined or 'xp advantage' in joined or 'power boost' in joined or 'p2w: mixed' in joined
+            )
+
+        if has_p2w:
+            return {"label": "Poor", "color": "#c0392b"}
+        if explicit_no_mtx or (not has_mtx and not has_p2w):
+            # Perfect -> Sky Blue
+            return {"label": "Perfect", "color": "#00bfff"}
+        if has_mtx and (explicit_p2w_no or not has_p2w):
+            # Fair -> Purple
+            return {"label": "Fair", "color": "#8e44ad"}
+        return {"label": "Unknown", "color": "#7f8c8d"}
+    except Exception:
+        return {"label": "Unknown", "color": "#7f8c8d"}
+
 @app.get("/api/games/search", response_model=List[Game])
-async def search_games(q: str = "", gen: Optional[int] = None):
+async def search_games(q: str, page: int = 1, page_size: int = 10):
+    """Search games via RAWG API with pagination and store minimal metadata locally.
+
+    NOTE: This endpoint requires 'q'. A 404 elsewhere usually means wrong path or server not running 'main.py'.
+    Returns empty list if 'q' is blank (handled before invoking RAWG).
+    """
     if not q:
-        # If no query, return local games
-        with get_db() as conn:
-            results = conn.execute("SELECT * FROM games").fetchall()
-            return [Game(**dict(row)) for row in results]
-    
-    # Search RAWG API first
-    rawg_results = rawg_client.search_games(q, page_size=10)
-    
-    games = []
+        return []
+    rawg_results = rawg_client.search_games(q, page_size=page_size, page=page)
+    games: List[Game] = []
     with get_db() as conn:
         for game_data in rawg_results.get("results", []):
-            # Check if game already exists in database
-            existing = conn.execute("SELECT * FROM games WHERE rawg_id = ?", (game_data["id"],)).fetchone()
-            
-            if existing:
-                game = Game(**dict(existing))
-            else:
-                # Insert new game into database
+            rawg_id = game_data.get("id")
+            title = game_data.get("name", "Unknown Title")
+            platform = "multi-platform"
+            cover_image = game_data.get("background_image")
+            # release date/year from RAWG 'released' (YYYY-MM-DD)
+            release_year = None
+            release_date = None
+            try:
+                rel = game_data.get("released")
+                if isinstance(rel, str) and len(rel) >= 4:
+                    release_year = int(rel[:4])
+                    release_date = rel
+            except Exception:
+                release_year = None
+                release_date = None
+            # Extract platform names list from RAWG structure
+            platform_names: List[str] = []
+            raw_platforms = game_data.get("platforms") or []
+            if isinstance(raw_platforms, list):
+                for p in raw_platforms:
+                    # RAWG returns [{'platform': {'id':..,'name':..}, 'released_at':..., ...}, ...]
+                    if isinstance(p, dict):
+                        plat_obj = p.get('platform')
+                        if isinstance(plat_obj, dict):
+                            name = plat_obj.get('name')
+                            if isinstance(name, str):
+                                platform_names.append(name)
+                        else:
+                            name = p.get('name')
+                            if isinstance(name, str):
+                                platform_names.append(name)
+            # For legacy single platform column store first platform if available
+            single_platform = platform_names[0] if platform_names else platform
+            conn.execute("""
+                INSERT OR IGNORE INTO games (title, rawg_id, platform, cover_image, release_year, release_date, release_date_source, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            """, (title, rawg_id, single_platform, cover_image, release_year, release_date, 'rawg'))
+            if cover_image:
                 conn.execute("""
-                    INSERT INTO games (title, rawg_id, platform, created_at, updated_at)
-                    VALUES (?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                """, (
-                    game_data["name"],
-                    game_data["id"],
-                    "multi-platform"  # Default platform
-                ))
-                
-                # Get the inserted game
-                game_id = conn.execute("SELECT last_insert_rowid()").fetchone()[0]
-                game_row = conn.execute("SELECT * FROM games WHERE id = ?", (game_id,)).fetchone()
-                game = Game(**dict(game_row))
-            
-            games.append(game)
-        
+                    UPDATE games SET cover_image = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE rawg_id = ? AND (cover_image IS NULL OR cover_image = '')
+                """, (cover_image, rawg_id))
+            if release_year:
+                conn.execute(
+                    "UPDATE games SET release_year = ?, updated_at = CURRENT_TIMESTAMP WHERE rawg_id = ? AND (release_year IS NULL)",
+                    (release_year, rawg_id)
+                )
+            if release_date:
+                conn.execute(
+                    "UPDATE games SET release_date = ?, release_date_source = COALESCE(release_date_source, 'rawg'), updated_at = CURRENT_TIMESTAMP WHERE rawg_id = ? AND (release_date IS NULL)",
+                    (release_date, rawg_id)
+                )
+            if single_platform and single_platform != platform:
+                conn.execute("""
+                    UPDATE games SET platform = ?, updated_at = CURRENT_TIMESTAMP
+                    WHERE rawg_id = ? AND (platform IS NULL OR platform = 'multi-platform')
+                """, (single_platform, rawg_id))
+            row = conn.execute("SELECT * FROM games WHERE rawg_id = ?", (rawg_id,)).fetchone()
+            if row:
+                gdict = dict(row)
+                gdict['platforms'] = platform_names if platform_names else None
+                games.append(Game(**gdict))
         conn.commit()
-    
     return games
 
+@app.get("/api/games/search-details")
+async def search_games_with_details(q: str, page: int = 1, page_size: int = 5):
+    """Search games and return minimal DB game info (including id) plus RAWG details.
+
+    Returns a list of objects: [{ game: Game, details: {...} }]
+    The RAWG details are trimmed to the most relevant fields to keep payload light.
+    """
+    if not q:
+        return []
+    # Reuse existing search to ensure DB is populated and consistent
+    results = await search_games(q=q, page=page, page_size=page_size)
+    items = []
+    for g in results:
+        try:
+            rawg_id = getattr(g, 'rawg_id', None)
+            details = rawg_client.get_game_details(rawg_id) if rawg_id else {}
+            # Trim/normalize details to a compact shape
+            det = {}
+            if isinstance(details, dict) and details:
+                genres = [d.get('name') for d in (details.get('genres') or []) if isinstance(d, dict) and d.get('name')]
+                platforms = []
+                raw_platforms = details.get('parent_platforms') or details.get('platforms') or []
+                if isinstance(raw_platforms, list):
+                    for p in raw_platforms:
+                        if isinstance(p, dict):
+                            # RAWG sometimes nests under 'platform'
+                            po = p.get('platform') if 'platform' in p else p
+                            if isinstance(po, dict) and isinstance(po.get('name'), str):
+                                platforms.append(po['name'])
+                det = {
+                    'id': details.get('id'),
+                    'name': details.get('name'),
+                    'slug': details.get('slug'),
+                    'released': details.get('released'),
+                    'updated': details.get('updated') or details.get('updated_at'),
+                    'metacritic': details.get('metacritic'),
+                    'rating': details.get('rating'),
+                    'playtime': details.get('playtime'),
+                    'genres': genres,
+                    'background_image': details.get('background_image'),
+                    'esrb_rating': (details.get('esrb_rating') or {}).get('name') if isinstance(details.get('esrb_rating'), dict) else details.get('esrb_rating'),
+                    'platforms': platforms or None,
+                }
+                # Include a short description excerpt if available
+                desc = details.get('description_raw') or details.get('description')
+                if isinstance(desc, str) and desc:
+                    # Keep it short to avoid large payloads
+                    det['description_excerpt'] = desc[:400] + ('…' if len(desc) > 400 else '')
+            items.append({
+                'game': g,
+                'details': det
+            })
+        except Exception as _e:
+            items.append({ 'game': g, 'details': {} })
+    return items
+
+@app.get("/api/search/games")
+async def api_search_games_with_details(q: str, page: int = 1, page_size: int = 5):
+    """Alias endpoint to search games by title and return DB id + compact RAWG details.
+    This path avoids any collision with /api/games/{game_id} routes.
+    """
+    return await search_games_with_details(q=q, page=page, page_size=page_size)
+
 @app.post("/api/games/{game_id}/scan")
-async def scan_game(game_id: int):
+async def scan_game(game_id: int, force: bool = False, apply_defaults: bool = False):
     with get_db() as conn:
         # Check if game exists
         game = conn.execute("SELECT * FROM games WHERE id = ?", (game_id,)).fetchone()
@@ -596,31 +1451,223 @@ async def scan_game(game_id: int):
 
         # Check if scores already exist
         scores = conn.execute("SELECT * FROM scores WHERE game_id = ?", (game_id,)).fetchone()
-        if scores:
+        # Honor 'force' flag: only early return if not forcing recomputation
+        if scores and not force:
             score_dict = dict(scores)
-            score_dict["reasoning"] = json.loads(score_dict["reasoning"])
+            try:
+                score_dict["reasoning"] = json.loads(score_dict["reasoning"])
+            except Exception:
+                pass
             return {"status": "completed", "scores": score_dict}
 
         # Get detailed game data from RAWG API
         game_dict = dict(game)
         rawg_id = game_dict.get("rawg_id")
-        
+
+        community_telemetry = None
         if rawg_id:
-            # Get detailed game data from RAWG
+            # Telemetry reuse check
+            existing_tel = conn.execute("SELECT * FROM game_community_telemetry WHERE game_id = ?", (game_id,)).fetchone()
+            reuse_telemetry = False
+            if existing_tel:
+                try:
+                    last_scan_at = datetime.fromisoformat(existing_tel['last_scan_at'])
+                    if (datetime.utcnow() - last_scan_at).total_seconds() < COMMUNITY_TELEMETRY_TTL and not force:
+                        reuse_telemetry = True
+                except Exception:
+                    pass
+            # Get detailed game data from RAWG (needed for scoring even if reusing telemetry snapshot) - cached by RAWG client
             rawg_details = rawg_client.get_game_details(rawg_id)
-            
+            # Backfill release_year on the games table if missing
+            try:
+                if game_dict.get('release_year') is None:
+                    rel = rawg_details.get('released') if isinstance(rawg_details, dict) else None
+                    year = None
+                    if isinstance(rel, str) and len(rel) >= 4:
+                        try:
+                            year = int(rel[:4])
+                        except Exception:
+                            year = None
+                    if year:
+                        conn.execute("UPDATE games SET release_year = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ? AND (release_year IS NULL)", (year, game_id))
+                        conn.commit()
+                        game_dict['release_year'] = year
+                # Backfill full release_date if missing
+                if game_dict.get('release_date') is None:
+                    rel_full = rawg_details.get('released') if isinstance(rawg_details, dict) else None
+                    if isinstance(rel_full, str) and len(rel_full) >= 4:
+                        conn.execute("UPDATE games SET release_date = ?, release_date_source = COALESCE(release_date_source, 'rawg'), updated_at = CURRENT_TIMESTAMP WHERE id = ? AND (release_date IS NULL)", (rel_full, game_id))
+                        conn.commit()
+                        game_dict['release_date'] = rel_full
+            except Exception as _e:
+                pass
+
             # Debug logging for data verification
             print(f"RAWG data for game {rawg_id}: Metacritic={rawg_details.get('metacritic')}, Rating={rawg_details.get('rating')}")
-            
+
             steam_data = {}
-            
+
             # Try to get Steam data if steam_id exists
             steam_id = game_dict.get("steam_id")
             if steam_id:
                 steam_data = steam_client.get_app_details(steam_id)
-            
-            # Generate scores from API data
+
+            # Persist / compute community telemetry BEFORE generating scores so we can override placeholders
+            try:
+                if reuse_telemetry:
+                    # Build telemetry dict from existing row for application
+                    community_telemetry = {
+                        'ratings_count': existing_tel['ratings_count'],
+                        'added_count': existing_tel['added_count'],
+                        'updated_rawg_at': existing_tel['updated_rawg_at'],
+                        'steam_ccu': existing_tel['steam_ccu'],
+                        'steam_reviews_total': existing_tel['steam_reviews_total'],
+                        'multiplayer_online': None,  # will be recomputed below to reflect new scaling if code changed
+                        'community_engagement': None,
+                        'longevity': None,
+                        'confidence_score': existing_tel['confidence_score']
+                    }
+                    # Recompute scoring-facing submetrics from stored base counts so scaling changes propagate
+                    recomputed = recompute_telemetry_submetrics(community_telemetry)
+                    community_telemetry.update(recomputed)
+                else:
+                    community_telemetry = compute_and_store_community_telemetry(conn, game_id, rawg_details, steam_id=game_dict.get('steam_id'))
+            except Exception as ct_e:
+                print(f"Community telemetry error: {ct_e}")
+
+            # Generate scores from API data (will overwrite community_longevity with placeholder values we may later refine)
             score_data = generate_scores_from_api(rawg_details, steam_data)
+
+            # MVP enrichment: LLM-backed innovation if enabled, else heuristic; accessibility features; life support inference
+            try:
+                innov_llm = None
+                if USE_LLM_INNOVATION:
+                    innov_llm = llm_innovation_score(game_id, rawg_details)
+                if innov_llm and innov_llm.get('overall_score') is not None:
+                    score_data['innovation_creativity_score'] = round(float(innov_llm['overall_score']),1)
+                    score_data.setdefault('reasoning', {}).setdefault('innovation_creativity', {
+                        'short': 'Innovation & Creativity (LLM-assessed)',
+                        'detailed': {}
+                    })
+                    det = score_data['reasoning']['innovation_creativity'].setdefault('detailed', {})
+                    det.update(innov_llm.get('summary', {}))
+                else:
+                    innov = compute_innovation_metrics(game_id, rawg_details)
+                    if innov.get('adjusted_score') is not None:
+                        orig_innov = score_data.get('innovation_creativity_score') or 0
+                        blended = round(orig_innov*0.8 + innov['adjusted_score']*0.2,1)
+                        score_data['innovation_creativity_score'] = blended
+                        score_data.setdefault('reasoning', {}).setdefault('innovation_creativity', {
+                            'short': 'Innovation & Creativity heuristic augmented',
+                            'detailed': {}
+                        })
+                        det = score_data['reasoning']['innovation_creativity'].setdefault('detailed', {})
+                        det.update(innov.get('summary', {}))
+                        det['blended_score'] = blended
+                        det['heuristic_component'] = innov['adjusted_score']
+            except Exception as e:
+                print(f"Innovation enrichment error: {e}")
+            try:
+                acc = infer_accessibility_features(game_id, rawg_details)
+                if acc.get('heuristic_score') is not None:
+                    # Soft blend into informational accessibility score (not weighted): 70% existing + 30% heuristic
+                    score_data['accessibility_score'] = round(score_data.get('accessibility_score',70)*0.7 + acc['heuristic_score']*0.3,1)
+                    score_data.setdefault('reasoning', {}).setdefault('accessibility_score', {
+                        'short': 'Accessibility heuristic augmented',
+                        'detailed': {}
+                    })
+                    ad = score_data['reasoning']['accessibility_score'].setdefault('detailed', {})
+                    ad['heuristic_features'] = acc.get('features')
+                    ad['heuristic_confidence'] = acc.get('confidence')
+                    ad['heuristic_score_component'] = acc.get('heuristic_score')
+            except Exception as e:
+                print(f"Accessibility heuristic error: {e}")
+            # Normalize monetisation block to structured default if not overridden later
+            try:
+                mon = score_data.get('reasoning', {}).get('monetisation')
+                if isinstance(mon, dict):
+                    det = mon.get('detailed')
+                    if isinstance(det, str):
+                        score_data['reasoning']['monetisation']['detailed'] = {
+                            'types': [],
+                            'notes': det,
+                            'fairness_label': 'Unknown',
+                            'fairness_color': '#7f8c8d',
+                            'fairness_source': 'none',
+                            'confidence': 0.3
+                        }
+            except Exception:
+                pass
+            try:
+                inferred_ls = infer_life_support_status(game_id, rawg_details, community_telemetry)
+                score_data.setdefault('reasoning', {}).setdefault('life_support_inferred', {
+                    'short': f"Inferred Life Support: {inferred_ls.get('status')} (conf {inferred_ls.get('confidence')})",
+                    'detailed': inferred_ls
+                })
+            except Exception as e:
+                print(f"Life support inference error: {e}")
+
+            # Recompute overall after possible innovation score adjustment
+            try:
+                overall = (
+                    score_data['core_gameplay_score'] * 0.25 +
+                    score_data['story_immersion_score'] * 0.20 +
+                    score_data['presentation_score'] * 0.15 +
+                    score_data['technical_performance_score'] * 0.15 +
+                    score_data['completeness_score'] * 0.10 +
+                    score_data['innovation_creativity_score'] * 0.10 +
+                    score_data['community_longevity_score'] * 0.05
+                )
+                score_data['overall_score'] = round(overall,1)
+                if 'overall_score' in score_data.get('reasoning', {}):
+                    score_data['reasoning']['overall_score']['short'] = f"Weighted Overall: {overall:.1f}/100"
+            except Exception as e:
+                print(f"Overall recompute after innovation error: {e}")
+
+            # If telemetry exists, recalc community longevity sub-metrics using real-ish signals
+            if community_telemetry:
+                try:
+                    score_data = apply_community_longevity_telemetry(score_data, community_telemetry)
+                except Exception as e:
+                    print(f"Apply telemetry to community longevity failed: {e}")
+
+            # Attempt to augment accessibility score using CIPT reviews (scrape)
+            try:
+                existing_rev = conn.execute("SELECT * FROM accessibility_reviews WHERE game_id = ?", (game_id,)).fetchone()
+                if existing_rev:
+                    # Use cached review to adjust accessibility
+                    raw_score = existing_rev[3]
+                    if raw_score:
+                        # Blend: 70% existing accessibility score + 30% CIPT normalized
+                        score_data['accessibility_score'] = round(score_data['accessibility_score'] * 0.7 + (raw_score) * 0.3, 1)
+                        acc_det = score_data['reasoning']['accessibility_score'].get('detailed')
+                        if isinstance(acc_det, str):
+                            score_data['reasoning']['accessibility_score']['detailed'] = acc_det + " CIPT review data incorporated (cached)."
+                        elif isinstance(acc_det, dict):
+                            score_data['reasoning']['accessibility_score']['detailed']['note'] = (
+                                str(score_data['reasoning']['accessibility_score']['detailed'].get('note','')) + " CIPT review data incorporated (cached)."
+                            ).strip()
+                else:
+                    # Search and parse first review
+                    reviews = cipt_client.search_reviews(game_dict.get('title', ''))
+                    if reviews:
+                        review_data = cipt_client.extract_accessibility_score(reviews[0]['url'])
+                        if review_data:
+                            conn.execute("""
+                                INSERT INTO accessibility_reviews (game_id, source_url, raw_score, max_score, features_json)
+                                VALUES (?, ?, ?, ?, ?)
+                            """, (game_id, review_data['source'], review_data['raw_score'], review_data['max_score'], json.dumps(review_data['features'])))
+                            # Blend and annotate
+                            score_data['accessibility_score'] = round(score_data['accessibility_score'] * 0.6 + review_data['raw_score'] * 0.4, 1)
+                            acc_det2 = score_data['reasoning']['accessibility_score'].get('detailed')
+                            if isinstance(acc_det2, str):
+                                score_data['reasoning']['accessibility_score']['detailed'] = acc_det2 + " CIPT review analysis blended (heuristic)."
+                            elif isinstance(acc_det2, dict):
+                                score_data['reasoning']['accessibility_score']['detailed']['note'] = (
+                                    str(score_data['reasoning']['accessibility_score']['detailed'].get('note','')) + " CIPT review analysis blended (heuristic)."
+                                ).strip()
+            except Exception as e:
+                print(f"CIPT augmentation error: {e}")
         else:
             # Fallback for games without RAWG ID (use mock data structure)
             mock_rawg_data = {
@@ -633,27 +1680,165 @@ async def scan_game(game_id: int):
             }
             score_data = generate_scores_from_api(mock_rawg_data)
 
-        # Insert scores into database
-        conn.execute("""
-            INSERT INTO scores (game_id, reviews_score, graphic_score, microtransactions_score,
-                              game_mechanics_score, completeness_score, story_quality_score,
-                              accessibility_score, overall_score, reasoning)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            game_id,
-            score_data["reviews_score"],
-            score_data["graphic_score"],
-            score_data["microtransactions_score"],
-            score_data["game_mechanics_score"],
-            score_data["completeness_score"],
-            score_data["story_quality_score"],
-            score_data["accessibility_score"],
-            score_data["overall_score"],
-            json.dumps(score_data["reasoning"])
-        ))
-        conn.commit()
+        # Auto-apply monetisation defaults if game title matches known patterns (only if no manual override exists)
+        game_title = game_dict.get('title', '')
+        try:
+            apply_monetisation_overrides_if_match(conn, game_id, game_title)
+            conn.commit()
+        except Exception as e:
+            print(f"Auto monetisation override failed for game {game_id}: {e}")
 
+        # Optionally auto-apply monetisation defaults using franchise patterns if explicitly enabled.
+        # This is OFF by default to avoid mislabeling future sequels; enable via env AUTO_MONETISATION_DEFAULTS=1
+        # or per-scan query param apply_defaults=true.
+        try:
+            if AUTO_MONETISATION_DEFAULTS or apply_defaults:
+                game_title = game_dict.get('title', '')
+                try:
+                    applied = apply_monetisation_overrides_if_match(conn, game_id, game_title)
+                    if applied:
+                        conn.commit()
+                except Exception as e:
+                    print(f"Auto monetisation override failed for game {game_id}: {e}")
+        except NameError:
+            # helper may not exist in older deployments
+            pass
+
+        # Apply overrides if present
+        override_row = conn.execute("SELECT * FROM score_overrides WHERE game_id = ?", (game_id,)).fetchone()
+        if override_row:
+            try:
+                monetisation_types = json.loads(override_row['monetisation_types']) if override_row['monetisation_types'] else []
+            except Exception:
+                monetisation_types = []
+            try:
+                performance_json = json.loads(override_row['performance_json']) if override_row['performance_json'] else {}
+            except Exception:
+                performance_json = {}
+            # Override technical performance submetrics if provided
+            changed_tp = False
+            tp_fields = ['frame_stability','stability_reliability','optimisation']
+            tech_reason = score_data['reasoning'].get('technical_performance', {}).get('detailed', {})
+            if isinstance(tech_reason, dict):
+                for f in tp_fields:
+                    if f in performance_json:
+                        key_map = {
+                            'frame_stability':'frame_stability',
+                            'stability_reliability':'stability_reliability',
+                            'optimisation':'optimisation'
+                        }
+                        tech_reason[key_map[f]] = performance_json[f]
+                        changed_tp = True
+                if changed_tp:
+                    # Recompute technical_performance_score weight blend
+                    fs = tech_reason.get('frame_stability',0)
+                    sr = tech_reason.get('stability_reliability',0)
+                    op = tech_reason.get('optimisation',0)
+                    tech_score = fs*(6/15)+sr*(4/15)+op*(5/15)
+                    score_data['technical_performance_score'] = round(tech_score,1)
+                    score_data['microtransactions_score'] = score_data['technical_performance_score']  # legacy mapping
+            # Monetisation override (informational)
+            monetisation_details = {
+                'types': monetisation_types,
+                'notes': override_row['monetisation_notes'],
+                'fairness_source': 'override',
+                'confidence': 0.9
+            }
+            try:
+                fairness = classify_monetisation(monetisation_details)
+                monetisation_details['fairness_label'] = fairness['label']
+                monetisation_details['fairness_color'] = fairness['color']
+            except Exception:
+                pass
+            score_data['reasoning']['monetisation'] = {
+                'short': 'Monetisation (override applied)',
+                'detailed': monetisation_details
+            }
+            # Recompute overall with possibly updated technical score
+            overall = (
+                score_data['core_gameplay_score'] * 0.25 +
+                score_data['story_immersion_score'] * 0.20 +
+                score_data['presentation_score'] * 0.15 +
+                score_data['technical_performance_score'] * 0.15 +
+                score_data['completeness_score'] * 0.10 +
+                score_data['innovation_creativity_score'] * 0.10 +
+                score_data['community_longevity_score'] * 0.05
+            )
+            score_data['overall_score'] = round(overall,1)
+            score_data['reasoning']['overall_score']['short'] = f"Weighted Overall: {overall:.1f}/100"
+        # Persist scores (upsert semantics if already scanned previously)
+        existing = conn.execute("SELECT id FROM scores WHERE game_id = ?", (game_id,)).fetchone()
+        columns = [
+            'game_id','reviews_score','graphic_score','microtransactions_score','game_mechanics_score',
+            'completeness_score','story_quality_score','accessibility_score','overall_score','reasoning',
+            'core_gameplay_score','story_immersion_score','presentation_score','technical_performance_score',
+            'innovation_creativity_score','community_longevity_score','scoring_version'
+        ]
+        values = [
+            game_id,
+            score_data['reviews_score'],
+            score_data['graphic_score'],
+            score_data['microtransactions_score'],
+            score_data['game_mechanics_score'],
+            score_data['completeness_score'],
+            score_data['story_quality_score'],
+            score_data['accessibility_score'],
+            score_data['overall_score'],
+            json.dumps(score_data['reasoning']),
+            score_data.get('core_gameplay_score'),
+            score_data.get('story_immersion_score'),
+            score_data.get('presentation_score'),
+            score_data.get('technical_performance_score'),
+            score_data.get('innovation_creativity_score'),
+            score_data.get('community_longevity_score'),
+            SCORING_VERSION
+        ]
+        if existing:
+            set_clause = ",".join([f"{c} = ?" for c in columns[1:]])
+            conn.execute(f"UPDATE scores SET {set_clause}, updated_at = CURRENT_TIMESTAMP WHERE game_id = ?", values[1:]+[game_id])
+        else:
+            placeholders = ','.join(['?']*len(columns))
+            conn.execute(f"INSERT INTO scores ({','.join(columns)}) VALUES ({placeholders})", values)
+        conn.commit()
+        # BEFORE persisting, ensure legacy archive stored once
+        # BEFORE persisting, ensure legacy archive stored once
+        legacy_exists = conn.execute("SELECT 1 FROM scores_archive WHERE game_id = ? AND scoring_version = 1", (game_id,)).fetchone()
+        if not legacy_exists and rawg_id:
+            legacy_payload = generate_scores_from_api_v1(rawg_details if rawg_id else {})
+            try:
+                conn.execute("INSERT OR IGNORE INTO scores_archive (game_id, scoring_version, payload_json) VALUES (?, ?, ?)", (game_id, 1, json.dumps(legacy_payload)))
+            except Exception as e:
+                print(f"Archive insert warning: {e}")
         return {"status": "completed", "scores": score_data}
+
+# Convenience GET alias (idempotent when force=false) for tooling/UIs that issue GET requests
+@app.get("/api/games/{game_id}/scan")
+async def scan_game_get(game_id: int, force: bool = False, apply_defaults: bool = False):
+    return await scan_game(game_id, force, apply_defaults)
+
+@app.get("/api/games/{game_id}/accessibility")
+async def get_accessibility_reviews(game_id: int):
+    """Return stored accessibility review analysis for a game (from CIPT scraping)."""
+    with get_db() as conn:
+        game = conn.execute("SELECT * FROM games WHERE id = ?", (game_id,)).fetchone()
+        if not game:
+            raise HTTPException(status_code=404, detail="Game not found")
+        rows = conn.execute("SELECT source_url, raw_score, max_score, features_json, created_at FROM accessibility_reviews WHERE game_id = ?", (game_id,)).fetchall()
+        data = []
+        for r in rows:
+            features = {}
+            try:
+                features = json.loads(r[3]) if r[3] else {}
+            except json.JSONDecodeError:
+                pass
+            data.append({
+                'source_url': r[0],
+                'raw_score': r[1],
+                'max_score': r[2],
+                'features': features,
+                'created_at': r[4]
+            })
+        return {'count': len(data), 'reviews': data}
 
 @app.get("/api/games/{game_id}")
 async def get_game(game_id: int):
@@ -713,6 +1898,1240 @@ async def get_data_sources():
         "last_updated": "Data freshness depends on RAWG's update frequency",
         "recommendation": "For official critic scores, please check Metacritic.com directly"
     }
+
+@app.get("/api/config/status")
+async def config_status():
+    """Return non-sensitive configuration status booleans to verify keys are loaded.
+    Does NOT return actual key values."""
+    rawg_present = bool(RAWG_API_KEY and RAWG_API_KEY != 'demo')
+    steam_present = bool(STEAM_API_KEY)
+    return {
+        "rawg_api_key_present": rawg_present,
+        "steam_api_key_present": steam_present,
+        "steam_api_key_used": False,  # currently Steam key not required for endpoints implemented
+        "openai_api_key_present": bool(OPENAI_API_KEY),
+        "use_llm_innovation": USE_LLM_INNOVATION,
+        "openai_model": OPENAI_MODEL,
+        "note": "RAWG key present means it's set and not the placeholder 'demo'. Steam key is not yet used in current calls. LLM for innovation is feature flagged."}
+
+from pydantic import BaseModel
+from typing import List, Optional
+
+# Request body for score overrides
+class ScoreOverrideRequest(BaseModel):
+    monetisation_types: Optional[List[str]] = None
+    monetisation_notes: Optional[str] = None
+    performance: Optional[dict] = None  # keys: frame_stability, stability_reliability, optimisation
+
+class LifeSupportRequest(BaseModel):
+    support_status: str  # expected: unknown | active | eternal | sunset | offline
+    last_update_date: Optional[str] = None
+    next_update_hint: Optional[str] = None
+    notes: Optional[str] = None
+
+class ManualReleaseDateRequest(BaseModel):
+    release_date: str  # YYYY-MM-DD
+    source: Optional[str] = 'manual'
+    notes: Optional[str] = None  # e.g., "added by AI; verified from official announcement"
+
+@app.post('/api/games/{game_id}/overrides')
+async def set_overrides(game_id: int, body: ScoreOverrideRequest):
+    with get_db() as conn:
+        game = conn.execute("SELECT id FROM games WHERE id = ?", (game_id,)).fetchone()
+        if not game:
+            raise HTTPException(status_code=404, detail='Game not found')
+        monetisation_json = json.dumps(body.monetisation_types) if body.monetisation_types else None
+        perf_json = json.dumps(body.performance) if body.performance else None
+        existing = conn.execute("SELECT id FROM score_overrides WHERE game_id = ?", (game_id,)).fetchone()
+        if existing:
+            conn.execute("""
+                UPDATE score_overrides SET monetisation_types = ?, monetisation_notes = ?, performance_json = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE game_id = ?
+            """, (monetisation_json, body.monetisation_notes, perf_json, game_id))
+        else:
+            conn.execute("""
+                INSERT INTO score_overrides (game_id, monetisation_types, monetisation_notes, performance_json)
+                VALUES (?, ?, ?, ?)
+            """, (game_id, monetisation_json, body.monetisation_notes, perf_json))
+        conn.commit()
+        return {"status": "ok", "game_id": game_id}
+
+@app.get('/api/games/{game_id}/overrides')
+async def get_overrides(game_id: int):
+    with get_db() as conn:
+        row = conn.execute("SELECT * FROM score_overrides WHERE game_id = ?", (game_id,)).fetchone()
+        if not row:
+            return {"game_id": game_id, "overrides": None}
+        resp = {
+            'monetisation_types': json.loads(row['monetisation_types']) if row['monetisation_types'] else None,
+            'monetisation_notes': row['monetisation_notes'],
+            'performance': json.loads(row['performance_json']) if row['performance_json'] else None,
+            'updated_at': row['updated_at']
+        }
+        return {"game_id": game_id, "overrides": resp}
+
+@app.post('/api/games/{game_id}/life-support')
+async def set_life_support(game_id: int, body: LifeSupportRequest):
+    allowed = {"unknown","active","eternal","sunset","offline"}
+    status = body.support_status.lower()
+    if status not in allowed:
+        raise HTTPException(status_code=400, detail=f"Unsupported support_status '{body.support_status}'. Allowed: {', '.join(sorted(allowed))}")
+    with get_db() as conn:
+        game = conn.execute("SELECT id FROM games WHERE id = ?", (game_id,)).fetchone()
+        if not game:
+            raise HTTPException(status_code=404, detail='Game not found')
+        existing = conn.execute("SELECT game_id FROM game_life_support WHERE game_id = ?", (game_id,)).fetchone()
+        if existing:
+            conn.execute("""
+                UPDATE game_life_support
+                SET support_status = ?, last_update_date = ?, next_update_hint = ?, notes = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE game_id = ?
+            """, (status, body.last_update_date, body.next_update_hint, body.notes, game_id))
+        else:
+            conn.execute("""
+                INSERT INTO game_life_support (game_id, support_status, last_update_date, next_update_hint, notes)
+                VALUES (?, ?, ?, ?, ?)
+            """, (game_id, status, body.last_update_date, body.next_update_hint, body.notes))
+        conn.commit()
+    return {"status":"ok","game_id":game_id,"support_status":status,"message":"Life support saved. Re-scan to bake into stored score (otherwise applied dynamically)."}
+
+@app.post('/api/admin/games/{game_id}/release-date')
+async def admin_set_release_date(game_id: int, body: ManualReleaseDateRequest):
+    # Basic validation YYYY-MM-DD
+    try:
+        if not isinstance(body.release_date, str) or len(body.release_date) < 4:
+            raise ValueError('invalid release_date')
+        # derive year if possible
+        year = None
+        try:
+            year = int(body.release_date[:4])
+        except Exception:
+            year = None
+    except Exception:
+        raise HTTPException(status_code=400, detail='Invalid release_date format')
+    with get_db() as conn:
+        game = conn.execute("SELECT id FROM games WHERE id = ?", (game_id,)).fetchone()
+        if not game:
+            raise HTTPException(status_code=404, detail='Game not found')
+        conn.execute(
+            "UPDATE games SET release_date = ?, release_year = COALESCE(release_year, ?), release_date_source = ?, release_date_notes = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?",
+            (body.release_date, year, (body.source or 'manual'), body.notes, game_id)
+        )
+        conn.commit()
+    return {"status":"ok","game_id":game_id, "release_date": body.release_date, "release_year": year, "source": body.source or 'manual'}
+
+@app.get('/api/games/{game_id}/life-support')
+async def get_life_support(game_id: int):
+    with get_db() as conn:
+        row = conn.execute("SELECT * FROM game_life_support WHERE game_id = ?", (game_id,)).fetchone()
+        if not row:
+            return {"game_id": game_id, "life_support": None}
+        return {"game_id": game_id, "life_support": {
+            'support_status': row['support_status'],
+            'last_update_date': row['last_update_date'],
+            'next_update_hint': row['next_update_hint'],
+            'notes': row['notes'],
+            'updated_at': row['updated_at']
+        }}
+
+# ---------------- Admin: reset legacy and rescan ----------------
+
+@app.post('/api/admin/reset-and-rescan')
+async def admin_reset_and_rescan(remove_legacy_archive: bool = True, limit: Optional[int] = None, only_game_id: Optional[int] = None):
+    """Delete existing scores and optional legacy v1 archives, then rescan all games.
+    - remove_legacy_archive: when true, deletes scores_archive rows for scoring_version=1
+    - limit: optionally cap the number of games to rescan (ordered by id)
+    Returns a summary of rescan results and any errors.
+    """
+    # Collect game ids first
+    with get_db() as conn:
+        if only_game_id is not None:
+            rows = conn.execute("SELECT id FROM games WHERE id = ?", (only_game_id,)).fetchall()
+        else:
+            rows = conn.execute("SELECT id FROM games ORDER BY id ASC").fetchall()
+        game_ids = [r['id'] for r in rows]
+        if limit is not None:
+            try:
+                lim = int(limit)
+                if lim >= 0:
+                    game_ids = game_ids[:lim]
+            except Exception:
+                pass
+        # Wipe existing scores for selected games
+        if game_ids:
+            placeholders = ','.join(['?'] * len(game_ids))
+            conn.execute(f"DELETE FROM scores WHERE game_id IN ({placeholders})", game_ids)
+        # Remove legacy v1 archive if requested
+        if remove_legacy_archive:
+            conn.execute("DELETE FROM scores_archive WHERE scoring_version = 1")
+        conn.commit()
+
+    # Rescan sequentially using the same logic as /scan
+    results = []
+    errors = []
+    for gid in game_ids:
+        try:
+            resp = await scan_game(gid)
+            results.append({"game_id": gid, "status": resp.get("status", "unknown")})
+        except Exception as e:
+            errors.append({"game_id": gid, "error": str(e)})
+    return {"rescanned": len(results), "errors": errors}
+
+# ---------------- Helper: auto-apply monetisation defaults ----------------
+
+def apply_monetisation_overrides_if_match(conn: sqlite3.Connection, game_id: int, title: str) -> bool:
+    """Check if game title matches known patterns and apply monetisation overrides if so.
+    Returns True if override was applied, False otherwise.
+    """
+    patterns = [
+        {
+            'match': lambda t: 'fortnite' in t and 'battle' in t,
+            'types': ["Free-to-Play","Battle Pass","Cosmetic MTX","Item Shop","Loot Boxes: No","P2W: No"],
+            'notes': "Cosmetic-only purchases; rotating shop; no gameplay advantages."
+        },
+        {
+            'match': lambda t: 'ea sports fc' in t and any(x in t for x in [' 24',' 25',' 26']),
+            'types': ["Full Price","Ultimate Team (FUT-like)","Packs/Player Cards","Season Pass","In-Game Currency","P2W: Mixed"],
+            'notes': "Ultimate Team card packs and seasonal pass; spend influences online modes (mixed)."
+        },
+        # EA Sports titles (FIFA, Madden, NHL, NBA Live, etc.)
+        {
+            'match': lambda t: ('fifa' in t) and any(x in t for x in ['20','21','22','23','24','25']),
+            'types': ["Full Price","Ultimate Team (FUT)","Packs/Player Cards","Season Pass","In-Game Currency","P2W: Mixed"],
+            'notes': "FIFA Ultimate Team with card packs; spend affects competitive online modes."
+        },
+        {
+            'match': lambda t: ('madden nfl' in t or 'madden' in t) and any(x in t for x in ['20','21','22','23','24','25']),
+            'types': ["Full Price","Ultimate Team (MUT)","Packs/Player Cards","Season Pass","In-Game Currency","P2W: Mixed"],
+            'notes': "Madden Ultimate Team with card packs; spend affects competitive online modes."
+        },
+        {
+            'match': lambda t: ('nhl' in t) and any(x in t for x in ['20','21','22','23','24','25']),
+            'types': ["Full Price","Ultimate Team (HUT)","Packs/Player Cards","Season Pass","In-Game Currency","P2W: Mixed"],
+            'notes': "Hockey Ultimate Team with card packs; spend affects competitive online modes."
+        },
+        {
+            'match': lambda t: ('nba live' in t) and any(x in t for x in ['19','20','21','22','23']),
+            'types': ["Full Price","Ultimate Team","Packs/Player Cards","In-Game Currency","P2W: Mixed"],
+            'notes': "NBA Live Ultimate Team with card packs; spend affects competitive modes."
+        },
+        {
+            'match': lambda t: 'legend of zelda' in t and 'breath of the wild' in t,
+            'types': ["Base Game","No Microtransactions","No Loot Boxes","No Battle Pass","Single-player","P2W: No"],
+            'notes': "Single purchase; no in-game store; no P2W."
+        },
+        {
+            'match': lambda t: 'legend of zelda' in t and ('tears of the kingdom' in t or 'totk' in t),
+            'types': ["Base Game","No Microtransactions","No Loot Boxes","No Battle Pass","Single-player","P2W: No"],
+            'notes': "Single purchase; no in-game store; no P2W."
+        },
+        {
+            'match': lambda t: 'witcher 3' in t,
+            'types': ["Base Game","Paid Expansions","No Loot Boxes","No Battle Pass","P2W: No"],
+            'notes': "Paid expansions (Hearts of Stone, Blood and Wine); no microtransactions; no P2W."
+        },
+        {
+            'match': lambda t: 'elden ring' in t and 'nightreign' not in t,
+            'types': ["Base Game","No Microtransactions","No Loot Boxes","No Battle Pass","Single-player","P2W: No"],
+            'notes': "Base game; no in-game purchases; no P2W."
+        },
+        {
+            'match': lambda t: 'red dead redemption 2' in t,
+            'types': ["Base Game","No Microtransactions","No Loot Boxes","No Battle Pass","Single-player","P2W: No"],
+            'notes': "Story mode unaffected by online MTX; base game has no P2W."
+        },
+        {
+            'match': lambda t: 'god of war (2018)' in t or (t.strip() == 'god of war' and 'ragnar' not in t),
+            'types': ["Base Game","No Microtransactions","No Loot Boxes","No Battle Pass","Single-player","P2W: No"],
+            'notes': "Single-player; no in-game purchases; no pay-to-win."
+        },
+        {
+            'match': lambda t: 'the last of us part i' in t or 'the last of us part ii' in t or (t.strip() == 'the last of us'),
+            'types': ["Base Game","No Microtransactions","No Loot Boxes","No Battle Pass","Single-player","P2W: No"],
+            'notes': "Single-player campaign; no in-game purchases; no pay-to-win."
+        },
+        {
+            'match': lambda t: t.strip() in ('skate 2','skate 3'),
+            'types': ["Base Game","No Microtransactions","No Loot Boxes","No Battle Pass","P2W: No"],
+            'notes': "Legacy titles; no in-game purchases; no P2W."
+        },
+        {
+            'match': lambda t: (
+                ("marvel" in t and ("spider-man" in t or "spider man" in t or "spiderman" in t)) or
+                ("miles morales" in t)
+            ),
+            'types': ["Base Game","Paid Expansions","No Microtransactions","No Loot Boxes","No Battle Pass","Single-player","P2W: No"],
+            'notes': "Single-player; optional paid DLC (The City That Never Sleeps / Remastered/Miles include content); no in-game purchases; no pay-to-win."
+        },
+        {
+            'match': lambda t: 'marvel snap' in t,
+            'types': ["Free-to-Play","Season Pass","Card Upgrades","In-Game Currency","Random Series Drops","P2W: Mixed"],
+            'notes': "F2P CCG with season pass and progression; spend can accelerate collection and competitive advantage (mixed)."
+        },
+        {
+            'match': lambda t: ("marvel's avengers" in t) or ("marvel's avengers" in t),
+            'types': ["Full Price","Cosmetic MTX","In-Game Currency","Boosters (retired)","P2W: No"],
+            'notes': "Primarily cosmetics; boosters removed; live service sunset."
+        },
+        {
+            'match': lambda t: 'god of war' in t and 'ragnar' in t,
+            'types': ["Base Game","Free DLC: Valhalla","No Microtransactions","No Loot Boxes","No Battle Pass","Single-player","P2W: No"],
+            'notes': "Base game + free Valhalla DLC; no in-game purchases; no pay-to-win."
+        },
+        # Skate series (legacy console releases; DLC packs, no MTX systems)
+        {
+            'match': lambda t: 'skate 2' in t,
+            'types': ["Base Game","Paid DLC (legacy)","No Microtransactions","No Loot Boxes","No Battle Pass","Single-player","P2W: No"],
+            'notes': "Console-era release; optional DLC packs; no in-game store or P2W."
+        },
+        {
+            'match': lambda t: 'skate 3' in t,
+            'types': ["Base Game","Paid DLC (legacy)","No Microtransactions","No Loot Boxes","No Battle Pass","Single-player","P2W: No"],
+            'notes': "Console-era release; optional DLC packs; no in-game store or P2W."
+        },
+        {
+            'match': lambda t: (t.strip().rstrip('.') == 'skate') or ('skate (2007)' in t),
+            'types': ["Base Game","Paid DLC (legacy)","No Microtransactions","No Loot Boxes","No Battle Pass","Single-player","P2W: No"],
+            'notes': "2007 base title; optional DLC; no MTX/loot boxes/battle pass; no P2W."
+        },
+        # Nightreign (2024 indie action platformer; single purchase, no MTX)
+        {
+            'match': lambda t: 'nightreign' in t,
+            'types': ["Base Game","Paid DLC","No Microtransactions","No Loot Boxes","No Battle Pass","Single-player","P2W: No"],
+            'notes': "Indie roguelike platformer; one-time purchase; no in-game store or P2W."
+        }
+    ]
+    
+    if not title:
+        return False
+    
+    tl = title.lower()
+    for p in patterns:
+        try:
+            if p['match'](tl):
+                monetisation_json = json.dumps(p['types'])
+                # Check if override already exists
+                existing = conn.execute("SELECT id FROM score_overrides WHERE game_id = ?", (game_id,)).fetchone()
+                if existing:
+                    # Only update if monetisation fields are empty/null
+                    existing_override = conn.execute("SELECT monetisation_types, monetisation_notes FROM score_overrides WHERE game_id = ?", (game_id,)).fetchone()
+                    if not existing_override[0] and not existing_override[1]:  # Both monetisation fields are empty
+                        conn.execute("UPDATE score_overrides SET monetisation_types = ?, monetisation_notes = ?, updated_at = CURRENT_TIMESTAMP WHERE game_id = ?",
+                                     (monetisation_json, p['notes'], game_id))
+                        return True
+                else:
+                    # Insert new override
+                    conn.execute("INSERT INTO score_overrides (game_id, monetisation_types, monetisation_notes) VALUES (?, ?, ?)",
+                                 (game_id, monetisation_json, p['notes']))
+                    return True
+                break
+        except Exception:
+            # Skip on pattern error
+            continue
+    return False
+
+# ---------------- Admin: apply monetisation defaults ----------------
+
+@app.post('/api/admin/apply-monetisation-defaults')
+async def admin_apply_monetisation_defaults(recalc: bool = True, limit: Optional[int] = None) -> dict:
+    """Apply default monetisation overrides for known titles by name heuristics.
+    - recalc: when true, rescans each affected game to bake fairness into scores
+    - limit: optionally cap the number of games processed (ordered by id)
+    Returns summary per game with override status and fairness.
+    """
+    patterns = [
+        {
+            'match': lambda t: 'fortnite' in t and 'battle' in t,
+            'types': ["Free-to-Play","Battle Pass","Cosmetic MTX","Item Shop","Loot Boxes: No","P2W: No"],
+            'notes': "Cosmetic-only purchases; rotating shop; no gameplay advantages."
+        },
+        {
+            'match': lambda t: 'ea sports fc' in t and any(x in t for x in [' 24',' 25',' 26']),
+            'types': ["Full Price","Ultimate Team (FUT-like)","Packs/Player Cards","Season Pass","In-Game Currency","P2W: Mixed"],
+            'notes': "Ultimate Team card packs and seasonal pass; spend influences online modes (mixed)."
+        },
+        # EA Sports titles (FIFA, Madden, NHL, NBA Live, etc.)
+        {
+            'match': lambda t: ('fifa' in t) and any(x in t for x in ['20','21','22','23','24','25']),
+            'types': ["Full Price","Ultimate Team (FUT)","Packs/Player Cards","Season Pass","In-Game Currency","P2W: Mixed"],
+            'notes': "FIFA Ultimate Team with card packs; spend affects competitive online modes."
+        },
+        {
+            'match': lambda t: ('madden nfl' in t or 'madden' in t) and any(x in t for x in ['20','21','22','23','24','25']),
+            'types': ["Full Price","Ultimate Team (MUT)","Packs/Player Cards","Season Pass","In-Game Currency","P2W: Mixed"],
+            'notes': "Madden Ultimate Team with card packs; spend affects competitive online modes."
+        },
+        {
+            'match': lambda t: ('nhl' in t) and any(x in t for x in ['20','21','22','23','24','25']),
+            'types': ["Full Price","Ultimate Team (HUT)","Packs/Player Cards","Season Pass","In-Game Currency","P2W: Mixed"],
+            'notes': "Hockey Ultimate Team with card packs; spend affects competitive online modes."
+        },
+        {
+            'match': lambda t: ('nba live' in t) and any(x in t for x in ['19','20','21','22','23']),
+            'types': ["Full Price","Ultimate Team","Packs/Player Cards","In-Game Currency","P2W: Mixed"],
+            'notes': "NBA Live Ultimate Team with card packs; spend affects competitive modes."
+        },
+        {
+            'match': lambda t: 'legend of zelda' in t and 'breath of the wild' in t,
+            'types': ["Base Game","No Microtransactions","No Loot Boxes","No Battle Pass","Single-player","P2W: No"],
+            'notes': "Single purchase; no in-game store; no P2W."
+        },
+        {
+            'match': lambda t: 'witcher 3' in t,
+            'types': ["Base Game","Paid Expansions","No Loot Boxes","No Battle Pass","P2W: No"],
+            'notes': "Paid expansions (Hearts of Stone, Blood and Wine); no microtransactions; no P2W."
+        },
+        {
+            'match': lambda t: (
+                ("marvel" in t and ("spider-man" in t or "spider man" in t or "spiderman" in t)) or
+                ("miles morales" in t)
+            ),
+            'types': ["Base Game","Paid Expansions","No Microtransactions","No Loot Boxes","No Battle Pass","Single-player","P2W: No"],
+            'notes': "Single-player; optional paid DLC (The City That Never Sleeps / Remastered/Miles include content); no in-game purchases; no pay-to-win."
+        },
+        {
+            'match': lambda t: 'marvel snap' in t,
+            'types': ["Free-to-Play","Season Pass","Card Upgrades","In-Game Currency","Random Series Drops","P2W: Mixed"],
+            'notes': "F2P CCG with season pass and progression; spend can accelerate collection and competitive advantage (mixed)."
+        },
+        {
+            'match': lambda t: ("marvel’s avengers" in t) or ("marvel's avengers" in t),
+            'types': ["Full Price","Cosmetic MTX","In-Game Currency","Boosters (retired)","P2W: No"],
+            'notes': "Primarily cosmetics; boosters removed; live service sunset."
+        },
+        {
+            'match': lambda t: 'god of war' in t and 'ragnar' in t,
+            'types': ["Base Game","Free DLC: Valhalla","No Microtransactions","No Loot Boxes","No Battle Pass","Single-player","P2W: No"],
+            'notes': "Base game + free Valhalla DLC; no in-game purchases; no pay-to-win."
+        },
+        # Skate series (legacy console releases; DLC packs, no MTX systems)
+        {
+            'match': lambda t: 'skate 2' in t,
+            'types': ["Base Game","Paid DLC (legacy)","No Microtransactions","No Loot Boxes","No Battle Pass","Single-player","P2W: No"],
+            'notes': "Console-era release; optional DLC packs; no in-game store or P2W."
+        },
+        {
+            'match': lambda t: 'skate 3' in t,
+            'types': ["Base Game","Paid DLC (legacy)","No Microtransactions","No Loot Boxes","No Battle Pass","Single-player","P2W: No"],
+            'notes': "Console-era release; optional DLC packs; no in-game store or P2W."
+        },
+        {
+            'match': lambda t: (t.strip().rstrip('.') == 'skate') or ('skate (2007)' in t),
+            'types': ["Base Game","Paid DLC (legacy)","No Microtransactions","No Loot Boxes","No Battle Pass","Single-player","P2W: No"],
+            'notes': "2007 base title; optional DLC; no MTX/loot boxes/battle pass; no P2W."
+        },
+        # Nightreign (2024 indie action platformer; single purchase, no MTX)
+        {
+            'match': lambda t: 'nightreign' in t,
+            'types': ["Base Game","Paid DLC","No Microtransactions","No Loot Boxes","No Battle Pass","Single-player","P2W: No"],
+            'notes': "Indie roguelike platformer; one-time purchase; no in-game store or P2W."
+        }
+    ]
+    processed = []
+    applied_ids: list[int] = []
+    # Phase 1: Apply overrides (DB write)
+    with get_db() as conn:
+        rows = conn.execute("SELECT id, title FROM games ORDER BY id ASC").fetchall()
+        if limit is not None:
+            try:
+                lim = int(limit)
+                if lim >= 0:
+                    rows = rows[:lim]
+            except Exception:
+                pass
+        for r in rows:
+            gid = r['id']
+            title = r['title'] or ''
+            tl = title.lower()
+            applied = False
+            for p in patterns:
+                try:
+                    if p['match'](tl):
+                        monetisation_json = json.dumps(p['types'])
+                        exists = conn.execute("SELECT id FROM score_overrides WHERE game_id = ?", (gid,)).fetchone()
+                        if exists:
+                            conn.execute("UPDATE score_overrides SET monetisation_types = ?, monetisation_notes = ?, updated_at = CURRENT_TIMESTAMP WHERE game_id = ?",
+                                         (monetisation_json, p['notes'], gid))
+                        else:
+                            conn.execute("INSERT INTO score_overrides (game_id, monetisation_types, monetisation_notes) VALUES (?, ?, ?)",
+                                         (gid, monetisation_json, p['notes']))
+                        applied = True
+                        break
+                except Exception as _e:
+                    # skip on pattern error
+                    pass
+            if applied:
+                applied_ids.append(gid)
+        conn.commit()
+    # Phase 2: Rescan outside DB context to avoid locks
+    if recalc and applied_ids:
+        for gid in applied_ids:
+            try:
+                await scan_game(gid, force=True)
+            except Exception:
+                pass
+    # Phase 3: Build summary (new DB context)
+    with get_db() as conn2:
+        for gid in [r['id'] for r in rows]:
+            title = next((r['title'] for r in rows if r['id'] == gid), '')
+            fairness = None
+            try:
+                srow = conn2.execute("SELECT reasoning FROM scores WHERE game_id = ?", (gid,)).fetchone()
+                if srow and srow[0]:
+                    reason = json.loads(srow[0])
+                    md = (reason or {}).get('monetisation', {}).get('detailed', {})
+                    if isinstance(md, dict):
+                        fairness = {
+                            'label': md.get('fairness_label'),
+                            'color': md.get('fairness_color')
+                        }
+            except Exception:
+                pass
+            processed.append({
+                'game_id': gid,
+                'title': title,
+                'override_applied': gid in applied_ids,
+                'fairness': fairness
+            })
+    return { 'count': len(processed), 'results': processed }
+
+# ---------------- Admin: Monetise Zelda franchise (bulk) ----------------
+
+@app.post('/api/admin/monetise-zelda')
+async def admin_monetise_zelda(recalc: bool = True, pages: int = 2, page_size: int = 40) -> dict:
+    """Search RAWG for 'zelda' across pages, upsert games into DB, apply monetisation overrides,
+    and optionally rescan to bake into scores. Returns a summary per affected game.
+
+    Notes:
+    - Mainline Legend of Zelda titles: Base Game; No MTX; No Loot Boxes; No Battle Pass; Single-player; P2W: No
+    - Hyrule Warriors titles: Full Price; Paid DLC/Expansion Pass; No MTX; No Loot Boxes; No Battle Pass; P2W: No
+    - Cadence of Hyrule: Base Game; Paid DLC; No MTX; No Loot Boxes; No Battle Pass; P2W: No
+    """
+    pages = max(1, min(5, int(pages)))
+    page_size = max(1, min(40, int(page_size)))
+
+    # Phase 1: Populate/refresh games via RAWG search
+    seen_ids = set()
+    for p in range(1, pages + 1):
+        try:
+            results = rawg_client.search_games('zelda', page_size=page_size, page=p)
+        except Exception:
+            results = {"results": []}
+        with get_db() as conn:
+            for game_data in results.get("results", []):
+                rawg_id = game_data.get("id")
+                if not rawg_id:
+                    continue
+                title = game_data.get("name", "Unknown Title")
+                cover_image = game_data.get("background_image")
+                # Release date/year from search payload
+                rel = game_data.get('released')
+                rel_year = None
+                if isinstance(rel, str) and len(rel) >= 4:
+                    try:
+                        rel_year = int(rel[:4])
+                    except Exception:
+                        rel_year = None
+                # Extract first platform name for legacy column
+                platform = "multi-platform"
+                platform_names: list[str] = []
+                raw_platforms = game_data.get("platforms") or []
+                if isinstance(raw_platforms, list):
+                    for pl in raw_platforms:
+                        if isinstance(pl, dict):
+                            po = pl.get('platform') if 'platform' in pl else pl
+                            if isinstance(po, dict) and isinstance(po.get('name'), str):
+                                platform_names.append(po['name'])
+                single_platform = platform_names[0] if platform_names else platform
+                conn.execute(
+                    """
+                    INSERT OR IGNORE INTO games (title, rawg_id, platform, cover_image, release_year, release_date, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    """,
+                    (title, rawg_id, single_platform, cover_image, rel_year, rel)
+                )
+                if cover_image:
+                    conn.execute(
+                        """
+                        UPDATE games SET cover_image = ?, updated_at = CURRENT_TIMESTAMP
+                        WHERE rawg_id = ? AND (cover_image IS NULL OR cover_image = '')
+                        """,
+                        (cover_image, rawg_id)
+                    )
+                if single_platform and single_platform != platform:
+                    conn.execute(
+                        """
+                        UPDATE games SET platform = ?, updated_at = CURRENT_TIMESTAMP
+                        WHERE rawg_id = ? AND (platform IS NULL OR platform = 'multi-platform')
+                        """,
+                        (single_platform, rawg_id)
+                    )
+                if rel_year:
+                    conn.execute("UPDATE games SET release_year = ?, updated_at = CURRENT_TIMESTAMP WHERE rawg_id = ? AND (release_year IS NULL)", (rel_year, rawg_id))
+                if isinstance(rel, str) and rel:
+                    conn.execute("UPDATE games SET release_date = ?, updated_at = CURRENT_TIMESTAMP WHERE rawg_id = ? AND (release_date IS NULL)", (rel, rawg_id))
+                row = conn.execute("SELECT id FROM games WHERE rawg_id = ?", (rawg_id,)).fetchone()
+                if row:
+                    seen_ids.add(int(row['id']))
+            conn.commit()
+
+    # Phase 2: Apply monetisation overrides based on title heuristics
+    processed = []
+    affected_ids: list[int] = []
+    with get_db() as conn:
+        # Select by id set OR fallback to title like search if none were newly seen
+        rows = []
+        if seen_ids:
+            placeholders = ','.join(['?'] * len(seen_ids))
+            rows = conn.execute(f"SELECT id, title FROM games WHERE id IN ({placeholders})", list(seen_ids)).fetchall()
+        else:
+            rows = conn.execute("SELECT id, title FROM games WHERE lower(title) LIKE '%zelda%' OR lower(title) LIKE '%hyrule warriors%' OR lower(title) LIKE '%cadence of hyrule%'").fetchall()
+
+        for r in rows:
+            gid = int(r['id'])
+            title = (r['title'] or '').lower()
+            types: list[str]
+            notes: str
+            if 'hyrule warriors' in title:
+                types = ["Full Price","Paid DLC / Expansion Pass","No Microtransactions","No Loot Boxes","No Battle Pass","P2W: No"]
+                notes = "Musou spin-off; Expansion Pass/paid DLC; no MTX/loot boxes; no P2W."
+            elif 'cadence of hyrule' in title:
+                types = ["Base Game","Paid DLC","No Microtransactions","No Loot Boxes","No Battle Pass","P2W: No"]
+                notes = "Rhythm-action spin-off; paid DLC; no in-game purchases/MTX; no P2W."
+            elif 'zelda' in title:  # default mainline LoZ pattern
+                types = ["Base Game","No Microtransactions","No Loot Boxes","No Battle Pass","Single-player","P2W: No"]
+                notes = "Single-player mainline entry; no in-game purchases; no P2W."
+            else:
+                continue
+            monetisation_json = json.dumps(types)
+            exists = conn.execute("SELECT id FROM score_overrides WHERE game_id = ?", (gid,)).fetchone()
+            if exists:
+                conn.execute(
+                    "UPDATE score_overrides SET monetisation_types = ?, monetisation_notes = ?, updated_at = CURRENT_TIMESTAMP WHERE game_id = ?",
+                    (monetisation_json, notes, gid)
+                )
+            else:
+                conn.execute(
+                    "INSERT INTO score_overrides (game_id, monetisation_types, monetisation_notes) VALUES (?, ?, ?)",
+                    (gid, monetisation_json, notes)
+                )
+            affected_ids.append(gid)
+        conn.commit()
+
+    # Phase 3: Rescan to bake into scores
+    rescanned = []
+    if recalc and affected_ids:
+        for gid in affected_ids:
+            try:
+                await scan_game(gid, force=True)
+                rescanned.append(gid)
+            except Exception:
+                pass
+
+    # Phase 4: Summary with fairness labels
+    summary = []
+    with get_db() as conn2:
+        for gid in affected_ids:
+            title = conn2.execute("SELECT title FROM games WHERE id = ?", (gid,)).fetchone()
+            fairness = None
+            try:
+                srow = conn2.execute("SELECT reasoning FROM scores WHERE game_id = ?", (gid,)).fetchone()
+                if srow and srow[0]:
+                    reason = json.loads(srow[0])
+                    md = (reason or {}).get('monetisation', {}).get('detailed', {})
+                    if isinstance(md, dict):
+                        fairness = {
+                            'label': md.get('fairness_label'),
+                            'color': md.get('fairness_color')
+                        }
+            except Exception:
+                pass
+            summary.append({
+                'game_id': gid,
+                'title': title['title'] if title else None,
+                'rescanned': gid in rescanned,
+                'fairness': fairness
+            })
+
+    return { 'franchise': 'zelda', 'affected': len(affected_ids), 'summary': summary }
+
+# ---------------- Legacy Scoring (v1) ----------------
+
+@app.post('/api/admin/backfill-release-year')
+async def admin_backfill_release_year(limit: Optional[int] = None) -> dict:
+    """Populate missing games.release_year from RAWG game details for rows where it's NULL.
+    Returns the number of rows updated and a sample list.
+    """
+    updated = 0
+    processed = []
+    with get_db() as conn:
+        rows = conn.execute("SELECT id, rawg_id FROM games WHERE release_year IS NULL AND rawg_id IS NOT NULL ORDER BY id ASC").fetchall()
+        if limit is not None:
+            try:
+                lim = int(limit)
+                if lim >= 0:
+                    rows = rows[:lim]
+            except Exception:
+                pass
+        for r in rows:
+            gid = r['id']
+            rid = r['rawg_id']
+            try:
+                details = rawg_client.get_game_details(int(rid)) if rid else {}
+                rel = details.get('released') if isinstance(details, dict) else None
+                year = None
+                if isinstance(rel, str) and len(rel) >= 4:
+                    try:
+                        year = int(rel[:4])
+                    except Exception:
+                        year = None
+                if year:
+                    conn.execute("UPDATE games SET release_year = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", (year, gid))
+                    updated += 1
+                    processed.append({'game_id': gid, 'release_year': year})
+            except Exception:
+                continue
+        conn.commit()
+    return {'updated': updated, 'sample': processed[:10]}
+
+@app.post('/api/admin/backfill-release-date')
+async def admin_backfill_release_date(limit: Optional[int] = None) -> dict:
+    """Populate missing games.release_date (YYYY-MM-DD) from RAWG game details for rows where it's NULL.
+    Also sets release_year if it's still missing. Returns number of rows updated and a sample list.
+    """
+    updated = 0
+    processed = []
+    with get_db() as conn:
+        rows = conn.execute("SELECT id, rawg_id FROM games WHERE release_date IS NULL AND rawg_id IS NOT NULL ORDER BY id ASC").fetchall()
+        if limit is not None:
+            try:
+                lim = int(limit)
+                if lim >= 0:
+                    rows = rows[:lim]
+            except Exception:
+                pass
+        for r in rows:
+            gid = r['id']
+            rid = r['rawg_id']
+            try:
+                details = rawg_client.get_game_details(int(rid)) if rid else {}
+                rel_full = details.get('released') if isinstance(details, dict) else None
+                if isinstance(rel_full, str) and len(rel_full) >= 4:
+                    # Set date
+                    conn.execute("UPDATE games SET release_date = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?", (rel_full, gid))
+                    # Also set year if still null
+                    try:
+                        year = int(rel_full[:4])
+                        conn.execute("UPDATE games SET release_year = COALESCE(release_year, ?), updated_at = CURRENT_TIMESTAMP WHERE id = ?", (year, gid))
+                    except Exception:
+                        pass
+                    updated += 1
+                    processed.append({'game_id': gid, 'release_date': rel_full})
+            except Exception:
+                continue
+        conn.commit()
+    return {'updated': updated, 'sample': processed[:10]}
+
+def generate_scores_from_api_v1(game_data: dict, steam_data: dict = None) -> dict:
+    """Original legacy scoring algorithm (version 1) preserved for rollback/reference."""
+    raw_metacritic = game_data.get("metacritic")
+    if not isinstance(raw_metacritic, (int, float)) or raw_metacritic is None:
+        raw_metacritic = 70
+    metacritic = int(max(0, min(100, raw_metacritic)))
+    reviews_score = metacritic
+    release_year = 2020
+    if isinstance(game_data.get("released"), str) and len(game_data["released"]) >= 4:
+        try:
+            release_year = int(game_data["released"][:4])
+        except ValueError:
+            pass
+    graphics_base = min(100, 60 + (release_year - 2010) * 2)
+    graphic_score = min(100, graphics_base + (metacritic - 70) * 0.3)
+    microtransactions_score = 85
+    if steam_data and steam_data.get("price_overview"):
+        microtransactions_score = 80
+    rating_raw = game_data.get("rating")
+    if not isinstance(rating_raw, (int, float)):
+        rating_raw = 0
+    rating = float(max(0, min(5, rating_raw)))
+    game_mechanics_score = min(100, max(0, (rating * 20) + (metacritic * 0.3)))
+    completeness_score = 80
+    playtime_val = game_data.get("playtime")
+    if not isinstance(playtime_val, (int, float)):
+        playtime_val = 0
+    if playtime_val:
+        if playtime_val > 20:
+            completeness_score = 90
+        elif playtime_val > 10:
+            completeness_score = 85
+        else:
+            completeness_score = 75
+    genres = game_data.get("genres") or []
+    if not isinstance(genres, list):
+        genres = []
+    genre_names = []
+    for g in genres:
+        if isinstance(g, dict):
+            n = g.get("name")
+            if isinstance(n, str):
+                genre_names.append(n.lower())
+    story_score = 75
+    if "rpg" in genre_names or "adventure" in genre_names:
+        story_score = min(100, metacritic + 5)
+    elif "action" in genre_names:
+        story_score = min(100, metacritic - 5)
+    accessibility_score = 70
+    if game_data.get("esrb_rating"):
+        accessibility_score = 75
+    overall_score = (
+        reviews_score * 0.25 +
+        graphic_score * 0.15 +
+        microtransactions_score * 0.10 +
+        game_mechanics_score * 0.20 +
+        completeness_score * 0.15 +
+        story_score * 0.10 +
+        accessibility_score * 0.05
+    )
+    metacritic_count = game_data.get('metacritic_count') or 'multiple'
+    reasoning = {
+        'reviews_score': {'short': f'Metacritic: {metacritic}/100','detailed': f'Legacy v1 critic aggregate ({metacritic_count} sources).'},
+        'graphic_score': {'short': f'Graphics heuristic {release_year}','detailed': 'Legacy graphics formula based on release year + metacritic delta.'},
+        'microtransactions_score': {'short': 'Monetisation heuristic','detailed': 'Basic assumption; slight penalty if Steam pricing present.'},
+        'game_mechanics_score': {'short': f'Rating {rating}/5','detailed': 'Combined RAWG rating + critic influence.'},
+        'completeness_score': {'short': f'Playtime {playtime_val or 0}h','detailed': 'Legacy content length heuristic.'},
+        'story_quality_score': {'short': 'Genre-based story estimate','detailed': 'Genre adjusted narrative proxy.'},
+        'accessibility_score': {'short': 'Baseline accessibility','detailed': 'ESRB presence small bonus (legacy).'},
+        'overall_score': {'short': f'Legacy Overall {overall_score:.1f}','detailed': 'Weighted legacy aggregate including reviews & accessibility.'}
+    }
+
+# ---------------- Community Telemetry Helpers ----------------
+def _scale_positive(value: Optional[int], high: int) -> float:
+    """Log/linear hybrid scaler to 0-100 for positive count metrics."""
+    if not value or value <= 0:
+        return 10.0
+    # Use log scaling up to 'high' reference threshold
+    try:
+        ratio = min(1.0, math.log10(value + 1) / math.log10(high + 1))
+    except (ValueError, ZeroDivisionError):
+        ratio = 0.0
+    # Smooth floor so small but non-zero still meaningful
+    return max(10.0, round(ratio * 100, 2))
+
+def fetch_steam_ccu(steam_id: int) -> Optional[int]:
+    """Fetch current concurrent player count from Steam (public endpoint)."""
+    try:
+        url = "https://api.steampowered.com/ISteamUserStats/GetNumberOfCurrentPlayers/v1/"
+        resp = requests.get(url, params={"appid": steam_id}, timeout=8)
+        resp.raise_for_status()
+        data = resp.json()
+        return data.get('response', {}).get('player_count')
+    except requests.RequestException:
+        return None
+
+def fetch_steam_reviews_summary(steam_id: int) -> dict:
+    """Fetch Steam review summary (public appreviews endpoint). Returns dict or empty."""
+    try:
+        url = f"https://store.steampowered.com/appreviews/{steam_id}"
+        params = {"json": 1, "language": "all", "purchase_type": "all"}
+        resp = requests.get(url, params=params, timeout=10)
+        resp.raise_for_status()
+        data = resp.json() or {}
+        qs = data.get('query_summary', {})
+        return {
+            'total_positive': qs.get('total_positive'),
+            'total_negative': qs.get('total_negative'),
+            'total_reviews': qs.get('total_reviews'),
+            'review_score': qs.get('review_score'),
+            'review_score_desc': qs.get('review_score_desc'),
+            'weighted_vote_score': qs.get('weighted_vote_score')
+        }
+    except requests.RequestException:
+        return {}
+
+def fetch_steam_achievements(steam_id: int) -> dict:
+    """Fetch global achievement percentages; returns average percent & sample size if possible."""
+    try:
+        url = "https://api.steampowered.com/ISteamUserStats/GetGlobalAchievementPercentagesForApp/v2/"
+        resp = requests.get(url, params={"gameid": steam_id}, timeout=10)
+        resp.raise_for_status()
+        data = resp.json() or {}
+        achieves = data.get('achievementpercentages', {}).get('achievements', [])
+        if not achieves:
+            return {}
+        total = len(achieves)
+        avg = sum(a.get('percent', 0) for a in achieves) / total if total else 0
+        return {'achievements_sampled': total, 'achievements_avg_percent': round(avg,2)}
+    except requests.RequestException:
+        return {}
+
+def compute_and_store_community_telemetry(conn: sqlite3.Connection, game_id: int, rawg_details: dict, steam_id: Optional[int] = None) -> dict:
+    """Extract enriched community signals (RAWG + optional Steam) and persist snapshot with confidence."""
+    ratings_count = rawg_details.get('ratings_count') or 0
+    added = rawg_details.get('added') or 0
+    updated_at = rawg_details.get('updated') or rawg_details.get('updated_at')
+
+    steam_ccu = None
+    steam_reviews_total = None
+    steam_payload = None
+    steam_reviews_summary = {}
+    steam_achievements = {}
+    if steam_id:
+        # Try reuse of appdetails already fetched earlier if available else request again
+        try:
+            steam_details = steam_client.get_app_details(steam_id)
+            if steam_details:
+                steam_reviews_total = steam_details.get('recommendations', {}).get('total')
+                steam_payload = {k: steam_details.get(k) for k in ['recommendations','price_overview','release_date','dlc']}
+        except Exception:
+            pass
+        steam_ccu = fetch_steam_ccu(steam_id)
+        steam_reviews_summary = fetch_steam_reviews_summary(steam_id)
+        steam_achievements = fetch_steam_achievements(steam_id)
+
+    # Derive submetrics via helper to allow reuse
+    recomputed = recompute_telemetry_submetrics({
+        'ratings_count': ratings_count,
+        'added_count': added,
+        'updated_rawg_at': updated_at,
+        'steam_ccu': steam_ccu,
+        'steam_reviews_total': steam_reviews_total,
+        'steam_positive_reviews': steam_reviews_summary.get('total_positive'),
+        'steam_negative_reviews': steam_reviews_summary.get('total_negative')
+    })
+
+    telemetry = {
+        'ratings_count': ratings_count,
+        'added_count': added,
+        'updated_rawg_at': updated_at,
+        'steam_ccu': steam_ccu,
+        'steam_reviews_total': steam_reviews_total,
+        'steam_positive_reviews': steam_reviews_summary.get('total_positive'),
+        'steam_negative_reviews': steam_reviews_summary.get('total_negative'),
+        **recomputed
+    }
+    # Attach review score & achievements
+    telemetry['steam_review_score'] = steam_reviews_summary.get('review_score')
+    telemetry['steam_weighted_vote'] = steam_reviews_summary.get('weighted_vote_score')
+    telemetry['steam_achievements_sampled'] = steam_achievements.get('achievements_sampled')
+    telemetry['steam_achievements_avg_percent'] = steam_achievements.get('achievements_avg_percent')
+
+    raw_payload_full = json.dumps({'rawg_full': rawg_details})
+    steam_payload_json = json.dumps(steam_payload) if steam_payload else None
+
+    # Upsert with new columns
+    existing = conn.execute("SELECT game_id FROM game_community_telemetry WHERE game_id = ?", (game_id,)).fetchone()
+    if existing:
+        conn.execute(
+            """UPDATE game_community_telemetry
+            SET ratings_count = ?, added_count = ?, updated_rawg_at = ?, steam_ccu = ?, steam_reviews_total = ?, confidence_score = ?,
+                raw_payload = ?, steam_payload = ?, steam_positive_reviews = ?, steam_negative_reviews = ?, steam_review_score = ?,
+                steam_weighted_vote = ?, steam_achievements_sampled = ?, steam_achievements_avg_percent = ?, last_scan_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+            WHERE game_id = ?""",
+            (ratings_count, added, updated_at, steam_ccu, steam_reviews_total, telemetry['confidence_score'], raw_payload_full, steam_payload_json,
+             telemetry['steam_positive_reviews'], telemetry['steam_negative_reviews'], telemetry['steam_review_score'], telemetry['steam_weighted_vote'],
+             telemetry['steam_achievements_sampled'], telemetry['steam_achievements_avg_percent'], game_id)
+        )
+    else:
+        conn.execute(
+            """INSERT INTO game_community_telemetry (game_id, ratings_count, added_count, updated_rawg_at, steam_ccu, steam_reviews_total, confidence_score, raw_payload, steam_payload)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (game_id, ratings_count, added, updated_at, steam_ccu, steam_reviews_total, telemetry['confidence_score'], raw_payload_full, steam_payload_json)
+        )
+        # Follow-up update to add extended columns if first insert (simplify code path)
+        conn.execute("UPDATE game_community_telemetry SET steam_positive_reviews = ?, steam_negative_reviews = ?, steam_review_score = ?, steam_weighted_vote = ?, steam_achievements_sampled = ?, steam_achievements_avg_percent = ? WHERE game_id = ?",
+                     (telemetry['steam_positive_reviews'], telemetry['steam_negative_reviews'], telemetry['steam_review_score'], telemetry['steam_weighted_vote'], telemetry['steam_achievements_sampled'], telemetry['steam_achievements_avg_percent'], game_id))
+    conn.commit()
+    return telemetry
+
+def recompute_telemetry_submetrics(base: dict) -> dict:
+    ratings_count = base.get('ratings_count') or 0
+    added = base.get('added_count') or 0
+    # Submetrics: multiplayer proxy from participation counts (slightly higher ceiling)
+    multiplayer_online = _scale_positive(ratings_count, high=6000)
+    # Steam review positivity moderation (reduced impact, range -10..+10 scaled 20%)
+    pos = base.get('steam_positive_reviews') or 0
+    neg = base.get('steam_negative_reviews') or 0
+    steam_ratio_factor = 0.0
+    total_reviews = pos + neg
+    if total_reviews > 50:
+        positivity = pos / total_reviews
+        # Map 0.4..0.9 -> -10..+10
+        norm = (positivity - 0.4) / 0.5
+        raw_factor = (norm * 20) - 10
+        steam_ratio_factor = max(-10, min(10, raw_factor))
+    community_engagement = round(
+        (_scale_positive(ratings_count, 6000) * 0.45) +
+        (_scale_positive(added, 4000) * 0.35) +
+        (steam_ratio_factor * 0.20), 2)
+    # Longevity recency
+    longevity_component = 60.0
+    updated_at = base.get('updated_rawg_at')
+    if updated_at:
+        try:
+            last_dt = datetime.fromisoformat(updated_at.replace('Z','+00:00')) if 'T' in updated_at else datetime.fromisoformat(updated_at)
+            delta_days = (datetime.utcnow() - last_dt).days
+            if delta_days <= 30:
+                longevity_component += 15
+            elif delta_days <= 90:
+                longevity_component += 10
+            elif delta_days <= 180:
+                longevity_component += 5
+            elif delta_days > 365:
+                longevity_component -= 5
+        except Exception:
+            pass
+    if ratings_count > 3000 and added > 1500:
+        longevity_component += 5
+    longevity_component = max(40, min(95, longevity_component))
+    # Confidence scoring
+    steam_ccu = base.get('steam_ccu') or 0
+    steam_ccu_scaled = _scale_positive(steam_ccu, high=50000) if steam_ccu else None
+    recency_score = 50
+    try:
+        if updated_at:
+            last_dt = datetime.fromisoformat(updated_at.replace('Z','+00:00')) if 'T' in updated_at else datetime.fromisoformat(updated_at)
+            d = (datetime.utcnow() - last_dt).days
+            if d <= 30: recency_score = 95
+            elif d <= 90: recency_score = 80
+            elif d <= 180: recency_score = 65
+            elif d <= 365: recency_score = 50
+            else: recency_score = 35
+    except Exception:
+        pass
+    weights = {
+        'ratings': 0.3,
+        'added': 0.2,
+        'recency': 0.25,
+        'steam': 0.25 if steam_ccu_scaled is not None else 0.0
+    }
+    weight_norm = sum(v for k,v in weights.items() if not (k=='steam' and steam_ccu_scaled is None))
+    conf = (
+        _scale_positive(ratings_count,5000)*weights['ratings'] +
+        _scale_positive(added,3000)*weights['added'] +
+        recency_score*weights['recency'] +
+        (steam_ccu_scaled or 0)*weights['steam']
+    )/weight_norm
+    confidence_score = round(conf,2)
+    return {
+        'multiplayer_online': round(multiplayer_online,2),
+        'community_engagement': round(community_engagement,2),
+        'longevity': round(longevity_component,2),
+        'confidence_score': confidence_score
+    }
+
+def apply_community_longevity_telemetry(score_data: dict, telemetry: dict) -> dict:
+    """Override placeholder community longevity metrics with telemetry-driven values and recompute category + overall.
+    telemetry keys: multiplayer_online, community_engagement, longevity
+    """
+    if 'reasoning' not in score_data:
+        return score_data
+    # Replace detailed submetrics if structure present; otherwise create stub
+    cl_reason = score_data['reasoning'].setdefault('community_longevity', {
+        'short': 'Community & Longevity (telemetry applied)',
+        'detailed': {}
+    })
+    detailed = cl_reason.setdefault('detailed', {})
+    detailed['multiplayer_online'] = telemetry['multiplayer_online']
+    detailed['community_engagement'] = telemetry['community_engagement']
+    detailed['longevity'] = telemetry['longevity']
+    detailed['source'] = 'RAWG/Steam telemetry heuristic'
+    if telemetry.get('confidence_score') is not None:
+        detailed['confidence_score'] = telemetry['confidence_score']
+    if telemetry.get('steam_ccu') is not None:
+        detailed['steam_ccu'] = telemetry['steam_ccu']
+    if telemetry.get('steam_reviews_total') is not None:
+        detailed['steam_reviews_total'] = telemetry['steam_reviews_total']
+    if telemetry.get('steam_positive_reviews') is not None:
+        detailed['steam_positive_reviews'] = telemetry['steam_positive_reviews']
+    if telemetry.get('steam_negative_reviews') is not None:
+        detailed['steam_negative_reviews'] = telemetry['steam_negative_reviews']
+    if telemetry.get('steam_review_score') is not None:
+        detailed['steam_review_score'] = telemetry['steam_review_score']
+    if telemetry.get('steam_weighted_vote') is not None:
+        detailed['steam_weighted_vote'] = telemetry['steam_weighted_vote']
+    if telemetry.get('steam_achievements_sampled') is not None:
+        detailed['steam_achievements_sampled'] = telemetry['steam_achievements_sampled']
+    if telemetry.get('steam_achievements_avg_percent') is not None:
+        detailed['steam_achievements_avg_percent'] = telemetry['steam_achievements_avg_percent']
+
+    # Recompute community_longevity_score with same weights 2/5,2/5,1/5
+    community_score = (
+        telemetry['multiplayer_online'] * (2/5) +
+        telemetry['community_engagement'] * (2/5) +
+        telemetry['longevity'] * (1/5)
+    )
+    score_data['community_longevity_score'] = round(community_score,1)
+    # Recompute overall (exclude informational metrics as before)
+    overall = (
+        score_data['core_gameplay_score'] * 0.25 +
+        score_data['story_immersion_score'] * 0.20 +
+        score_data['presentation_score'] * 0.15 +
+        score_data['technical_performance_score'] * 0.15 +
+        score_data['completeness_score'] * 0.10 +
+        score_data['innovation_creativity_score'] * 0.10 +
+        score_data['community_longevity_score'] * 0.05
+    )
+    score_data['overall_score'] = round(overall,1)
+    if 'overall_score' in score_data['reasoning']:
+        score_data['reasoning']['overall_score']['short'] = f"Weighted Overall: {overall:.1f}/100"
+    # Update community short line
+    cl_reason['short'] = f"Community & Longevity: {community_score:.1f}/100 (telemetry)"
+    return score_data
+
+@app.get('/api/games/{game_id}/community-telemetry')
+async def get_community_telemetry(game_id: int):
+    with get_db() as conn:
+        row = conn.execute("SELECT * FROM game_community_telemetry WHERE game_id = ?", (game_id,)).fetchone()
+        if not row:
+            return {"game_id": game_id, "telemetry": None}
+        data = dict(row)
+        # Provide derived submetrics (recompute with current logic for forward compatibility)
+        derived = recompute_telemetry_submetrics({
+            'ratings_count': data.get('ratings_count'),
+            'added_count': data.get('added_count'),
+            'updated_rawg_at': data.get('updated_rawg_at'),
+            'steam_ccu': data.get('steam_ccu')
+        })
+        data['derived'] = derived
+        return {"game_id": game_id, "telemetry": data}
+
+# --- MVP Intelligence Endpoints ---
+@app.get('/api/games/{game_id}/innovation-metrics')
+async def get_innovation_metrics(game_id: int):
+    with get_db() as conn:
+        row = conn.execute("SELECT * FROM game_innovation_metrics WHERE game_id = ?", (game_id,)).fetchone()
+        if not row:
+            return {"game_id": game_id, "innovation": None}
+        data = dict(row)
+        try:
+            data['summary'] = json.loads(data['summary_json']) if data.get('summary_json') else {}
+        except Exception:
+            data['summary'] = {}
+        return {"game_id": game_id, "innovation": data}
+
+@app.get('/api/games/{game_id}/accessibility-features')
+async def get_accessibility_features_metrics(game_id: int):
+    with get_db() as conn:
+        rows = conn.execute("SELECT feature_key, present, confidence, evidence, created_at FROM game_accessibility_features WHERE game_id = ?", (game_id,)).fetchall()
+        feats = []
+        for r in rows:
+            feats.append({
+                'feature_key': r[0],
+                'present': bool(r[1]),
+                'confidence': r[2],
+                'evidence': r[3],
+                'created_at': r[4]
+            })
+        return {"game_id": game_id, "features": feats}
+
+@app.get('/api/games/{game_id}/life-support-inferred')
+async def get_life_support_inferred(game_id: int):
+    with get_db() as conn:
+        row = conn.execute("SELECT * FROM game_life_support_inference WHERE game_id = ?", (game_id,)).fetchone()
+        if not row:
+            return {"game_id": game_id, "life_support_inferred": None}
+        data = dict(row)
+        try:
+            data['evidence'] = json.loads(data['evidence_json']) if data.get('evidence_json') else {}
+        except Exception:
+            data['evidence'] = {}
+        return {"game_id": game_id, "life_support_inferred": data}
+
+# Life support helper
+def apply_life_support(score_data: dict, life_row: sqlite3.Row, persist: bool = False, conn=None):
+    """Apply life support adjustments to community longevity & overall.
+    Status mapping:
+      eternal: +10, active: +5, sunset: -5, offline: -10, unknown: 0
+    Only recompute if delta != 0 or for annotation. Adds reasoning.life_support.
+    If persist=True updates DB (requires conn and assumes scores already inserted/updated).
+    """
+    status = (life_row['support_status'] or 'unknown').lower()
+    delta_map = {'eternal':10,'active':5,'sunset':-5,'offline':-10,'unknown':0}
+    delta = delta_map.get(status,0)
+    orig = score_data.get('community_longevity_score') or 0
+    if delta:
+        new_comm = max(0,min(100,orig+delta))
+        score_data['community_longevity_score'] = round(new_comm,1)
+        # Recompute overall
+        overall = (
+            score_data['core_gameplay_score'] * 0.25 +
+            score_data['story_immersion_score'] * 0.20 +
+            score_data['presentation_score'] * 0.15 +
+            score_data['technical_performance_score'] * 0.15 +
+            score_data['completeness_score'] * 0.10 +
+            score_data['innovation_creativity_score'] * 0.10 +
+            score_data['community_longevity_score'] * 0.05
+        )
+        score_data['overall_score'] = round(overall,1)
+        if 'overall_score' in score_data.get('reasoning',{}):
+            score_data['reasoning']['overall_score']['short'] = f"Weighted Overall: {overall:.1f}/100"
+    # annotate reasoning
+    score_data.setdefault('reasoning',{})
+    ls_detail = {
+        'status': status,
+        'delta_applied': delta,
+        'last_update_date': life_row['last_update_date'],
+        'next_update_hint': life_row['next_update_hint'],
+        'notes': life_row['notes']
+    }
+    score_data['reasoning']['life_support'] = {
+        'short': f"Life Support: {status.title()} ({'+' if delta>0 else ''}{delta})",
+        'detailed': ls_detail
+    }
+    # enrich community longevity detailed block
+    try:
+        cl_det = score_data['reasoning'].get('community_longevity',{}).get('detailed',{})
+        if isinstance(cl_det, dict):
+            cl_det['life_support_status'] = status
+            cl_det['life_support_delta'] = delta
+    except Exception:
+        pass
+    if persist and conn is not None:
+        try:
+            conn.execute("UPDATE scores SET community_longevity_score = ?, overall_score = ?, reasoning = ?, updated_at = CURRENT_TIMESTAMP WHERE game_id = ?",
+                         (score_data['community_longevity_score'], score_data['overall_score'], json.dumps(score_data['reasoning']), life_row['game_id']))
+            conn.commit()
+        except Exception as e:
+            print(f"Persist life support failed: {e}")
+    return score_data
+
+    
+
+@app.get('/api/games/{game_id}/scores')
+async def get_scores_by_version(game_id: int, version: int = SCORING_VERSION, recalc: bool = False):
+    """Retrieve scores for a specific scoring version. For version=1 (legacy) can recalc if not archived."""
+    with get_db() as conn:
+        if version == SCORING_VERSION:
+            row = conn.execute("SELECT * FROM scores WHERE game_id = ?", (game_id,)).fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail='Scores not found for current version')
+            sd = dict(row)
+            try:
+                sd['reasoning'] = json.loads(sd['reasoning'])
+            except Exception:
+                pass
+            sd['scoring_version'] = SCORING_VERSION
+            return sd
+        elif version == 1:
+            archived = conn.execute("SELECT payload_json FROM scores_archive WHERE game_id = ? AND scoring_version = 1", (game_id,)).fetchone()
+            if archived and not recalc:
+                return json.loads(archived[0])
+            # Recalculate on demand (does not overwrite archive unless absent)
+            game = conn.execute("SELECT * FROM games WHERE id = ?", (game_id,)).fetchone()
+            if not game:
+                raise HTTPException(status_code=404, detail='Game not found')
+            rawg_id = game['rawg_id']
+            rawg_details = rawg_client.get_game_details(rawg_id) if rawg_id else {}
+            payload = generate_scores_from_api_v1(rawg_details)
+            if not archived:
+                try:
+                    conn.execute("INSERT OR IGNORE INTO scores_archive (game_id, scoring_version, payload_json) VALUES (?, ?, ?)", (game_id, 1, json.dumps(payload)))
+                    conn.commit()
+                except Exception:
+                    pass
+            return payload
+        else:
+            raise HTTPException(status_code=400, detail='Unsupported scoring version')
 
 if __name__ == "__main__":
     import uvicorn

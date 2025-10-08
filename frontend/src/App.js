@@ -41,8 +41,29 @@ const App = React.memo(() => {
         background: 'rgba(255, 255, 255, 0.08)',
         borderRadius: '50%',
         border: '1px solid rgba(255, 255, 255, 0.15)',
-        animation: 'float 8s ease-in-out infinite'
-      }}></div>
+        animation: 'float 8s ease-in-out infinite',
+        pointerEvents: 'none'
+      }}>
+        {selectedGame?.cover_image && (
+          <img
+            src={selectedGame.cover_image}
+            alt={`${selectedGame.title} cover`}
+            style={{
+              width: 56,
+              height: 56,
+              borderRadius: 10,
+              objectFit: 'cover',
+              border: '1px solid rgba(255, 255, 255, 0.5)',
+              boxShadow: '0 2px 8px rgba(0,0,0,0.25)',
+              position: 'absolute',
+              top: '50%',
+              left: '50%',
+              transform: 'translate(-50%, -50%)',
+              pointerEvents: 'none'
+            }}
+          />
+        )}
+      </div>
       <div style={{
         position: 'absolute',
         bottom: '20%',
@@ -52,8 +73,29 @@ const App = React.memo(() => {
         background: 'rgba(255, 255, 255, 0.06)',
         borderRadius: '50%',
         border: '1px solid rgba(255, 255, 255, 0.12)',
-        animation: 'float 12s ease-in-out infinite reverse'
-      }}></div>
+        animation: 'float 12s ease-in-out infinite reverse',
+        pointerEvents: 'none'
+      }}>
+        {selectedGame?.cover_image && (
+          <img
+            src={selectedGame.cover_image}
+            alt={`${selectedGame.title} cover`}
+            style={{
+              width: 44,
+              height: 44,
+              borderRadius: 8,
+              objectFit: 'cover',
+              border: '1px solid rgba(255, 255, 255, 0.5)',
+              boxShadow: '0 2px 8px rgba(0,0,0,0.25)',
+              position: 'absolute',
+              top: '50%',
+              left: '50%',
+              transform: 'translate(-50%, -50%)',
+              pointerEvents: 'none'
+            }}
+          />
+        )}
+      </div>
 
       <div style={{
         position: 'relative',
