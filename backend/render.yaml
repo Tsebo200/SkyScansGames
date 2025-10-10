@@ -1,0 +1,29 @@
+# Render Blueprint: FastAPI backend for SkyScansGames
+# Docs: https://render.com/docs/infrastructure-as-code
+
+services:
+  - type: web
+    name: skyscans-backend
+    rootDir: backend
+    plan: free
+    runtime: docker
+    autoDeploy: true
+    envVars:
+      - key: PYTHONUNBUFFERED
+        value: "1"
+      - key: PORT
+        value: "10000"
+      - key: DATABASE_URL
+        value: /data/skyscans_games.db
+      - key: ALLOWED_ORIGINS
+        value: "http://localhost:3000"
+      - key: API_CACHE_TTL
+        value: "1800"
+      - key: SEARCH_CACHE_TTL
+        value: "600"
+      - key: API_CACHE_DISABLE_EXPIRY
+        value: "0"
+    disk:
+      name: data
+      mountPath: /data
+      sizeGB: 3

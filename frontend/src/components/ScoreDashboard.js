@@ -1,12 +1,254 @@
-import React, { useState, useCallback, useMemo, useEffect } from 'react';
+import React, { useState, useCallback, useMemo, useEffect, useRef } from 'react';
+import { createPortal } from 'react-dom';
+import { rewriteText, rewriteBatch, toneStyles } from '../utils/textTone';
+import { useAISettings } from '../context/AISettingsContext';
+import sfx from '../utils/sfx';
 
-const ScoreDashboard = React.memo(({ scores, game }) => {
+const ScoreDashboard = React.memo(({ scores, game, externalOpenPreview = 0, onPreviewOpenChange = () => {}, rubricPalette }) => {
+  const { aiFeedbackEnabled } = useAISettings();
   // UI state
   const [selectedMetric, setSelectedMetric] = useState(null);
   const [showModal, setShowModal] = useState(false);
   const [showGamePreview, setShowGamePreview] = useState(false);
   const [previewTab, setPreviewTab] = useState('overview'); // 'overview' | 'description' | 'awards'
+  // RAWG details state
+  const [rawgDetails, setRawgDetails] = useState({ description: '', genres: [], developers: [], publishers: [], age_rating: null });
+  const [rawgLoading, setRawgLoading] = useState(false);
+  const [rawgError, setRawgError] = useState(null);
+  const [descExpanded, setDescExpanded] = useState(false);
 
+  // Open Game Preview when an external trigger changes
+  useEffect(() => {
+    if (externalOpenPreview) {
+      setShowGamePreview(true);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [externalOpenPreview]);
+
+  // Notify parent when preview open state changes
+  useEffect(() => {
+    try { onPreviewOpenChange(!!showGamePreview); } catch {}
+  }, [showGamePreview, onPreviewOpenChange]);
+  // Tone rewrite UI state (local)
+  const [tone, setTone] = useState('casual');
+  // Base description derived from current raw scores (used only for initial state)
+  const defaultDesc = useMemo(() => (
+    scores?.reasoning?.presentation?.detailed?.explanation ||
+    scores?.reasoning?.overall_score?.detailed ||
+    'A popular title evaluated by our rubric for gameplay, story, presentation, performance, innovation, and community.'
+  ), [scores?.reasoning]);
+  const [rewriteBase, setRewriteBase] = useState('');
+  const [rewriteOut, setRewriteOut] = useState(null); // { text, provider, used_model }
+  const [rewriteLoading, setRewriteLoading] = useState(false);
+
+  // Local override copy to reflect rewritten reasoning texts without mutating props
+  const [localScores, setLocalScores] = useState(scores);
+  useEffect(() => { setLocalScores(scores); }, [scores]);
+  const [metricsRewriteInfo, setMetricsRewriteInfo] = useState(null); // { provider, used_model }
+  useEffect(() => {
+    // Reset rewrite base when the selected game changes or modal opens
+    if (showGamePreview) {
+      setRewriteBase(defaultDesc || '');
+      setRewriteOut(null);
+      setRewriteLoading(false);
+  setTone('casual');
+      setDescExpanded(false);
+    }
+  }, [showGamePreview, defaultDesc, game?.id]);
+
+  // Fetch RAWG details when Game Preview opens
+  useEffect(() => {
+    let cancelled = false;
+    const fetchDetails = async () => {
+      if (!showGamePreview || !game?.id) return;
+      setRawgLoading(true);
+      setRawgError(null);
+      try {
+        const resp = await fetch(`/api/games/${game.id}/rawg-details`);
+        if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+        const data = await resp.json();
+        if (cancelled) return;
+        const safe = {
+          description: (data?.description || '').toString(),
+          genres: Array.isArray(data?.genres) ? data.genres.filter(Boolean) : [],
+          developers: Array.isArray(data?.developers) ? data.developers.filter(Boolean) : [],
+          publishers: Array.isArray(data?.publishers) ? data.publishers.filter(Boolean) : [],
+          age_rating: data?.age_rating || null
+        };
+        setRawgDetails(safe);
+        try { sfx.recommendation(); } catch {}
+      } catch (e) {
+        if (!cancelled) setRawgError(e?.message || 'Failed to load RAWG details');
+      } finally {
+        if (!cancelled) setRawgLoading(false);
+      }
+    };
+    fetchDetails();
+    return () => { cancelled = true; };
+  }, [showGamePreview, game?.id]);
+
+  // If AI feedback is turned off, revert any local rewrites and hide outputs
+  useEffect(() => {
+    if (!aiFeedbackEnabled) {
+      setLocalScores(scores);
+      setRewriteOut(null);
+      setMetricsRewriteInfo(null);
+    }
+  }, [aiFeedbackEnabled, scores]);
+  const buildSubscores = useCallback((base) => {
+    try {
+      const r = (base || {}).reasoning || {};
+      const cg = (r.core_gameplay || {}).detailed || {};
+      const tp = (r.technical_performance || {}).detailed || {};
+      const pr = (r.presentation || {}).detailed || {};
+      const si = (r.story_immersion || {}).detailed || {};
+      const obj = {
+        core_gameplay: {
+          mechanics_controls: cg.mechanics_controls,
+          balance: cg.balance,
+          replayability: cg.replayability
+        },
+        technical_performance: {
+          frame_stability: tp.frame_stability,
+          stability_reliability: tp.stability_reliability,
+          optimisation: tp.optimisation
+        },
+        presentation: {
+          graphics_art: pr.graphics_art,
+          sound_music: pr.sound_music,
+          immersion_factor: pr.immersion_factor
+        },
+        story_immersion: {
+          narrative_quality: si.narrative_quality,
+          worldbuilding: si.worldbuilding,
+          character_development: si.character_development
+        }
+      };
+      return obj;
+    } catch {
+      return null;
+    }
+  }, []);
+
+  const handleRewrite = useCallback(async () => {
+    if (!rewriteBase || rewriteLoading) return;
+    setRewriteLoading(true);
+    try {
+      const ctx = { game_title: game?.title || '', subscores: buildSubscores(localScores || scores) };
+      const res = await rewriteText(rewriteBase, tone, ctx);
+      if (aiFeedbackEnabled) {
+        setRewriteOut(res);
+      }
+    } catch (e) {
+      if (aiFeedbackEnabled) {
+        setRewriteOut({ text: rewriteBase, provider: 'fallback', used_model: null });
+      }
+    } finally {
+      setRewriteLoading(false);
+    }
+  }, [rewriteBase, tone, rewriteLoading, game?.title, localScores, scores, buildSubscores, aiFeedbackEnabled]);
+
+  // Batch rewrite metrics button handler
+  const handleRewriteMetrics = useCallback(async () => {
+    if (!aiFeedbackEnabled) return;
+    const base = localScores || scores;
+    if (!base) return;
+    const r = base?.reasoning || {};
+    const items = [];
+    // Collect all short/explanation-like fields to rewrite
+    const pushIf = (key, text) => {
+      if (typeof text === 'string' && text.trim()) items.push({ key, text });
+    };
+    pushIf('overall_score.short', r?.overall_score?.short);
+    pushIf('overall_score.detailed', r?.overall_score?.detailed);
+    pushIf('core_gameplay.short', r?.core_gameplay?.short);
+    pushIf('core_gameplay.explanation', r?.core_gameplay?.detailed?.explanation);
+    pushIf('story_immersion.short', r?.story_immersion?.short);
+    pushIf('story_immersion.explanation', r?.story_immersion?.detailed?.explanation);
+    pushIf('presentation.short', r?.presentation?.short);
+    pushIf('presentation.explanation', r?.presentation?.detailed?.explanation);
+    pushIf('technical_performance.short', r?.technical_performance?.short);
+    pushIf('technical_performance.explanation', r?.technical_performance?.detailed?.explanation);
+    pushIf('innovation_creativity.short', r?.innovation_creativity?.short);
+    pushIf('innovation_creativity.explanation', r?.innovation_creativity?.detailed?.explanation);
+    pushIf('community_longevity.short', r?.community_longevity?.short);
+    pushIf('community_longevity.explanation', r?.community_longevity?.detailed?.explanation);
+    pushIf('reviews_score.short', r?.reviews_score?.short);
+    pushIf('accessibility_score.short', r?.accessibility_score?.short);
+    // Monetisation: enrich text with fairness hints so the backend fallback can be accurate
+    if (r?.monetisation?.short) {
+      const md = r?.monetisation?.detailed;
+      const label = md?.fairness_label;
+      const types = Array.isArray(md?.types) ? md.types.filter(Boolean).join(', ') : '';
+      const p2w = /p2w\s*:\s*(yes|mixed)/i.test(types) ? 'p2w: yes' : (/p2w\s*:\s*no/i.test(types) ? 'p2w: no' : '');
+      const hintParts = [];
+      if (label) hintParts.push(`fairness: ${label}`);
+      if (types) hintParts.push(`types: ${types}`);
+      if (p2w) hintParts.push(p2w);
+      const hint = hintParts.length ? ` [${hintParts.join(' | ')}]` : '';
+      // Prefix with a monetisation tag to steer the LLM/fallback away from gameplay phrasing
+      items.push({ key: 'monetisation.short', text: `monetisation: ${r.monetisation.short}${hint}` });
+    }
+    pushIf('life_support_inferred.short', r?.life_support_inferred?.short);
+    if (!items.length) return;
+
+    // Call batch endpoint
+  const { mapping, provider, used_model } = await rewriteBatch(items, tone, { game_title: game?.title || '', subscores: buildSubscores(base) });
+    if (!aiFeedbackEnabled) return;
+    setMetricsRewriteInfo({ provider, used_model });
+
+    // Apply rewrites into a shallow copy for rendering only
+    const applyMap = (obj, path, value) => {
+      const parts = path.split('.');
+      let ref = obj;
+      for (let i = 0; i < parts.length - 1; i++) {
+        const p = parts[i];
+        if (!ref[p] || typeof ref[p] !== 'object') ref[p] = {};
+        ref = ref[p];
+      }
+      ref[parts[parts.length - 1]] = value;
+    };
+    // Clone minimal reasoning for local render update
+    const newReason = JSON.parse(JSON.stringify(base.reasoning || {}));
+    Object.entries(mapping).forEach(([k, v]) => applyMap(newReason, k, v));
+    // Patch into a local shadow of scores for render
+    setLocalScores({ ...base, reasoning: newReason });
+  }, [localScores, scores, tone, game?.title, aiFeedbackEnabled]);
+
+  // Auto-apply metric rewrites globally when tone changes
+  useEffect(() => {
+    if (aiFeedbackEnabled) {
+      handleRewriteMetrics();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [tone, aiFeedbackEnabled]);
+
+  // Derive the description text from the current (possibly rewritten) reasoning
+  const descriptionText = useMemo(() => {
+    const reason = (localScores || scores)?.reasoning;
+    return (
+      reason?.presentation?.detailed?.explanation ||
+      reason?.overall_score?.detailed ||
+      'A popular title evaluated by our rubric for gameplay, story, presentation, performance, innovation, and community.'
+    );
+  }, [localScores, scores]);
+
+  // Prefer RAWG description when available; provide expand/collapse
+  const rawgDescEffective = useMemo(() => {
+    const primary = (rawgDetails?.description || '').trim();
+    return primary || descriptionText || '';
+  }, [rawgDetails?.description, descriptionText]);
+  const canExpandDesc = useMemo(() => {
+    return (rawgDescEffective || '').length > 600;
+  }, [rawgDescEffective]);
+  const rawgDescDisplay = useMemo(() => {
+    const txt = rawgDescEffective || '';
+    if (descExpanded || txt.length <= 600) return txt;
+    // Trim to last whole word to avoid abrupt cut
+    return txt.slice(0, 600).replace(/\s+\S*$/, '') + '…';
+  }, [rawgDescEffective, descExpanded]);
+
+  
   // Details URL (for QR)
   const detailsUrl = useMemo(() => {
     try {
@@ -70,15 +312,16 @@ const ScoreDashboard = React.memo(({ scores, game }) => {
   }, [NINTENDO_LOGO_URL, PC_LOGO_URL, PS_LOGO_URL, XBOX_LOGO_URL]);
 
   // Rubric metric tiles
+  const rc = Array.isArray(rubricPalette) && rubricPalette.length >= 7 ? rubricPalette : ['#45b7d1','#eb4d4b','#4ecdc4','#ff9f43','#f0932b','#6c5ce7','#9980FA'];
   const rubricItems = useMemo(() => [
-    { label: 'Core Gameplay', value: scores.core_gameplay_score ?? scores.game_mechanics_score, color: '#45b7d1', key: 'core_gameplay' },
-    { label: 'Story & Immersion', value: scores.story_immersion_score ?? scores.story_quality_score, color: '#eb4d4b', key: 'story_immersion' },
-    { label: 'Presentation', value: scores.presentation_score ?? scores.graphic_score, color: '#4ecdc4', key: 'presentation' },
-    { label: 'Technical Performance', value: scores.technical_performance_score ?? scores.microtransactions_score, color: '#ff9f43', key: 'technical_performance' },
-    { label: 'Completeness', value: scores.completeness_score, color: '#f0932b', key: 'completeness_score' },
-    { label: 'Innovation & Creativity', value: scores.innovation_creativity_score, color: '#6c5ce7', key: 'innovation_creativity' },
-    { label: 'Community & Longevity', value: scores.community_longevity_score, color: '#9980FA', key: 'community_longevity' }
-  ], [scores]);
+    { label: 'Core Gameplay', value: scores.core_gameplay_score ?? scores.game_mechanics_score, color: rc[0], key: 'core_gameplay' },
+    { label: 'Story & Immersion', value: scores.story_immersion_score ?? scores.story_quality_score, color: rc[1], key: 'story_immersion' },
+    { label: 'Presentation', value: scores.presentation_score ?? scores.graphic_score, color: rc[2], key: 'presentation' },
+    { label: 'Technical Performance', value: scores.technical_performance_score ?? scores.microtransactions_score, color: rc[3], key: 'technical_performance' },
+    { label: 'Completeness', value: scores.completeness_score, color: rc[4], key: 'completeness_score' },
+    { label: 'Innovation & Creativity', value: scores.innovation_creativity_score, color: rc[5], key: 'innovation_creativity' },
+    { label: 'Community & Longevity', value: scores.community_longevity_score, color: rc[6], key: 'community_longevity' }
+  ], [scores, rc]);
 
   // Telemetry state (not rendered here, but kept for parity)
   const [telemetry, setTelemetry] = useState(null);
@@ -165,7 +408,7 @@ const ScoreDashboard = React.memo(({ scores, game }) => {
 
   // Monetisation fairness tag (color + label)
   const monetisationFairness = useMemo(() => {
-    const d = scores?.reasoning?.monetisation?.detailed;
+    const d = (localScores || scores)?.reasoning?.monetisation?.detailed;
     if (d && typeof d === 'object' && (d.fairness_label || d.fairness_color)) {
       const label = typeof d.fairness_label === 'string' ? d.fairness_label : 'Unknown';
       const color = typeof d.fairness_color === 'string' ? d.fairness_color : '#7f8c8d';
@@ -186,12 +429,12 @@ const ScoreDashboard = React.memo(({ scores, game }) => {
       else if (hasMTX && (explicitP2WNo || !hasP2W)) { label = 'Fair'; color = '#8e44ad'; }
     }
     return { label, color };
-  }, [scores?.reasoning?.monetisation]);
+  }, [localScores, scores]);
 
   // Modal control helpers
   const handleMetricClick = useCallback((metricKey) => { setSelectedMetric(metricKey); setShowModal(true); }, []);
   const closeModal = useCallback(() => { setShowModal(false); setSelectedMetric(null); }, []);
-  const reasoningRef = useMemo(() => (scores && scores.reasoning) || null, [scores]);
+  const reasoningRef = useMemo(() => ((localScores || scores) && (localScores || scores).reasoning) || null, [localScores, scores]);
   const getReasoning = useCallback((metricKey) => reasoningRef?.[metricKey] || { short: 'No reasoning available', detailed: 'No detailed reasoning available' }, [reasoningRef]);
   const selectedReasoning = useMemo(() => { if (!selectedMetric) return null; return getReasoning(selectedMetric); }, [selectedMetric, getReasoning]);
 
@@ -217,6 +460,11 @@ const ScoreDashboard = React.memo(({ scores, game }) => {
       const entries = Object.entries(detailed).filter(([k]) => k !== 'explanation');
       const explanation = detailed.explanation;
       if (!entries.length && !explanation) return <p style={{ margin: 0 }}>No structured details.</p>;
+      const prettyKey = (k) => {
+        if (k === 'optimisation') return 'optimisation (game file size)';
+        if (k === 'stability_reliability') return 'stability & reliability (glitches or crashes)';
+        return k.replace(/_/g, ' ');
+      };
       return (
         <div style={{ margin: 0 }}>
           {entries.length > 0 && (
@@ -224,7 +472,7 @@ const ScoreDashboard = React.memo(({ scores, game }) => {
               <tbody>
                 {entries.map(([k, v]) => (
                   <tr key={k}>
-                    <td style={{ padding: '4px 6px', fontWeight: 500, fontSize: '0.85rem', textTransform: 'capitalize', width: '55%' }}>{k.replace(/_/g, ' ')}</td>
+                    <td style={{ padding: '4px 6px', fontWeight: 500, fontSize: '0.85rem', textTransform: 'capitalize', width: '55%' }}>{prettyKey(k)}</td>
                     <td style={{ padding: '4px 6px', fontSize: '0.85rem', textAlign: 'right' }}>
                       {typeof v === 'number' ? `${v.toFixed(1)}` : (typeof v === 'object' ? JSON.stringify(v) : String(v))}
                     </td>
@@ -251,6 +499,7 @@ const ScoreDashboard = React.memo(({ scores, game }) => {
     if (detailed && typeof detailed === 'object') {
       const types = Array.isArray(detailed.types) ? detailed.types.filter(Boolean) : [];
       const notes = typeof detailed.notes === 'string' ? detailed.notes : null;
+      const tactics = Array.isArray(detailed.tactics) ? detailed.tactics.filter(Boolean) : [];
       return (
         <div style={{ margin: 0 }}>
           {types.length > 0 && (
@@ -259,6 +508,16 @@ const ScoreDashboard = React.memo(({ scores, game }) => {
                 <li key={i} style={{ marginBottom: '4px' }}>{String(t)}</li>
               ))}
             </ul>
+          )}
+          {tactics.length > 0 && (
+            <div style={{ marginBottom: 10 }}>
+              <div style={{ fontWeight: 600, color: '#111827', margin: '6px 0' }}>Tactics</div>
+              <ul style={{ margin: '0 0 0 18px', padding: 0 }}>
+                {tactics.map((t, i) => (
+                  <li key={i} style={{ marginBottom: 4 }}>{String(t)}</li>
+                ))}
+              </ul>
+            </div>
           )}
           {notes && (
             <p style={{ margin: 0, textAlign: 'justify' }}>{notes}</p>
@@ -280,12 +539,68 @@ const ScoreDashboard = React.memo(({ scores, game }) => {
     return score >= 70 ? '#f9ca24' : '#ff6b6b';
   }, [scores.overall_score]);
 
+  // Keyboard navigation across cards (left/right/up/down)
+  const cardsContainerRef = useRef(null);
+  const handleContainerArrowNav = useCallback((e) => {
+    const keys = ['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'];
+    if (!keys.includes(e.key)) return;
+    const container = cardsContainerRef.current;
+    if (!container) return;
+    const focusables = Array.from(container.querySelectorAll('[data-nav="cards"]'));
+    if (!focusables.length) return;
+    const active = document.activeElement;
+    // If focus is not on a card yet, focus the first card
+    if (!focusables.includes(active)) {
+      e.preventDefault();
+      focusables[0].focus();
+      return;
+    }
+    const rects = focusables.map(el => ({ el, r: el.getBoundingClientRect() }));
+    const curIdx = focusables.indexOf(active);
+    const cur = rects[curIdx];
+    const cx = cur.r.left + cur.r.width/2;
+    const cy = cur.r.top + cur.r.height/2;
+    const dir = e.key;
+    const candidates = rects.filter((o, idx) => {
+      if (idx === curIdx) return false;
+      const ox = o.r.left + o.r.width/2;
+      const oy = o.r.top + o.r.height/2;
+      if (dir === 'ArrowRight') return ox > cx + 2;
+      if (dir === 'ArrowLeft') return ox < cx - 2;
+      if (dir === 'ArrowDown') return oy > cy + 2;
+      if (dir === 'ArrowUp') return oy < cy - 2;
+      return false;
+    });
+    if (!candidates.length) return; // Let default behavior happen
+    e.preventDefault();
+    // Pick nearest by Euclidean distance
+    const pick = candidates.reduce((best, o) => {
+      const ox = o.r.left + o.r.width/2;
+      const oy = o.r.top + o.r.height/2;
+      const dx = ox - cx;
+      const dy = oy - cy;
+      const d2 = dx*dx + dy*dy;
+      if (!best || d2 < best.d2) return { el: o.el, d2 };
+      return best;
+    }, null);
+    if (pick?.el) pick.el.focus();
+  }, []);
+
+  const activateOnKey = useCallback((e, onActivate) => {
+    if (e.key === 'Enter' || e.key === ' ') {
+      e.preventDefault();
+      onActivate?.();
+    }
+  }, []);
+
   return (
     <div style={{ padding: '20px' }}>
       <h2
         onClick={() => setShowGamePreview(true)}
         title="Tap to preview game details"
         role="button"
+        tabIndex={0}
+        onKeyDown={(e) => activateOnKey(e, () => setShowGamePreview(true))}
         style={{
           color: '#fff', textAlign: 'center', marginBottom: '15px', background: 'rgba(255, 255, 255, 0.1)',
           padding: '15px 30px', borderRadius: '25px', border: '1px solid rgba(255, 255, 255, 0.2)',
@@ -316,7 +631,7 @@ const ScoreDashboard = React.memo(({ scores, game }) => {
       </div>
 
       {/* Metric tiles */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))', gap: '25px', marginBottom: '30px' }}>
+      <div ref={cardsContainerRef} onKeyDown={handleContainerArrowNav} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))', gap: '25px', marginBottom: '30px' }}>
         {rubricItems.map((item, index) => (
           <div key={index}
             style={{
@@ -324,46 +639,63 @@ const ScoreDashboard = React.memo(({ scores, game }) => {
               border: '1px solid rgba(255, 255, 255, 0.2)', boxShadow: '0 4px 20px rgba(0, 0, 0, 0.1)', transition: 'transform 0.2s ease, box-shadow 0.2s ease', cursor: 'pointer'
             }}
             onClick={() => handleMetricClick(item.key)}
-            title={item.label}
+            role="button"
+            tabIndex={0}
+            data-nav="cards"
+            onKeyDown={(e) => activateOnKey(e, () => handleMetricClick(item.key))}
+            title={getReasoning(item.key).short}
             onMouseEnter={(e) => { e.currentTarget.style.transform = 'translateY(-2px)'; e.currentTarget.style.boxShadow = '0 8px 25px rgba(0, 0, 0, 0.15)'; }}
             onMouseLeave={(e) => { e.currentTarget.style.transform = 'translateY(0)'; e.currentTarget.style.boxShadow = '0 4px 20px rgba(0, 0, 0, 0.1)'; }}
           >
-            <h3 style={{ margin: '0 0 15px 0', color: '#fff', fontSize: '1.1rem', fontWeight: 500 }}>{item.label}</h3>
+            <h3 style={{ margin: '0 0 8px 0', color: '#fff', fontSize: '1.1rem', fontWeight: 500 }}>{item.label}</h3>
             <div style={{ fontSize: '2.8rem', fontWeight: 'bold', color: item.color, textShadow: '0 0 5px rgba(255, 255, 255, 0.2)', marginBottom: 10 }}>
               {item.value ?? '—'}{typeof item.value === 'number' ? '%' : ''}
             </div>
             <div style={{ width: '100%', height: 8, background: 'rgba(255, 255, 255, 0.2)', borderRadius: 4, overflow: 'hidden' }}>
               <div style={{ width: `${item.value || 0}%`, height: '100%', background: `linear-gradient(90deg, ${item.color}, ${item.color}aa)`, borderRadius: 4, transition: 'width 0.8s ease' }} />
             </div>
+            {getReasoning(item.key).short && (
+              <div style={{ marginTop: 8, color: '#e5e7eb', fontSize: '0.85rem', opacity: 0.9 }}>{getReasoning(item.key).short}</div>
+            )}
           </div>
         ))}
 
         {/* Monetisation preview card */}
         <div
           onClick={() => handleMetricClick('monetisation')}
-          title="Monetisation"
+          title={getReasoning('monetisation').short}
           style={{ background: 'rgba(255, 255, 255, 0.1)', borderRadius: 20, padding: 25, textAlign: 'center', border: '1px solid rgba(255, 255, 255, 0.2)', boxShadow: '0 4px 20px rgba(0, 0, 0, 0.1)', transition: 'transform 0.2s ease, box-shadow 0.2s ease', cursor: 'pointer' }}
+          role="button"
+          tabIndex={0}
+          data-nav="cards"
+          onKeyDown={(e) => activateOnKey(e, () => handleMetricClick('monetisation'))}
           onMouseEnter={(e) => { e.currentTarget.style.transform = 'translateY(-2px)'; e.currentTarget.style.boxShadow = '0 8px 25px rgba(0, 0, 0, 0.15)'; }}
           onMouseLeave={(e) => { e.currentTarget.style.transform = 'translateY(0)'; e.currentTarget.style.boxShadow = '0 4px 20px rgba(0, 0, 0, 0.1)'; }}
         >
           <h3 style={{ margin: '0 0 15px 0', color: '#fff', fontSize: '1.1rem', fontWeight: 500 }}>Monetisation</h3>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10, marginBottom: 10 }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10, marginBottom: 6 }}>
             <span style={{ width: 14, height: 14, borderRadius: '50%', background: monetisationFairness.color, boxShadow: `0 0 6px ${monetisationFairness.color}aa` }} />
             <span style={{ color: '#eee', fontSize: '0.95rem', fontWeight: 500 }}>Fairness: {monetisationFairness.label}</span>
           </div>
           <div style={{ width: '100%', height: 8, background: 'rgba(255, 255, 255, 0.2)', borderRadius: 4, overflow: 'hidden' }}>
             <div style={{ width: '100%', height: '100%', background: `linear-gradient(90deg, ${monetisationFairness.color}, ${monetisationFairness.color}aa)`, borderRadius: 4, opacity: 0.6 }} />
           </div>
+          {getReasoning('monetisation').short && (
+            <div style={{ marginTop: 8, color: '#e5e7eb', fontSize: '0.85rem', opacity: 0.9 }}>{getReasoning('monetisation').short}</div>
+          )}
         </div>
       </div>
 
       {/* Informational panels */}
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '25px', marginBottom: '30px' }}>
-        <div onClick={() => handleMetricClick('reviews_score')} title="View reviews details" style={{ background: 'rgba(255,255,255,0.12)', padding: 20, borderRadius: 18, border: '1px solid rgba(255,255,255,0.25)', cursor: 'pointer' }}>
+      <div ref={cardsContainerRef} onKeyDown={handleContainerArrowNav} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '25px', marginBottom: '30px' }}>
+        <div onClick={() => handleMetricClick('reviews_score')} title={getReasoning('reviews_score').short || 'View reviews details'} style={{ background: 'rgba(255,255,255,0.12)', padding: 20, borderRadius: 18, border: '1px solid rgba(255,255,255,0.25)', cursor: 'pointer' }} role="button" tabIndex={0} data-nav="cards" onKeyDown={(e) => activateOnKey(e, () => handleMetricClick('reviews_score'))}>
           <h4 style={{ margin: '0 0 10px 0', color: '#fff' }}>Reviews (Informational)</h4>
           <p style={{ margin: 0, color: '#eee', fontSize: '0.9rem' }}>Metacritic: {scores.reviews_score ?? 'N/A'}/100 (Not weighted).</p>
+          {getReasoning('reviews_score').short && (
+            <p style={{ margin: '6px 0 0 0', color: '#ddd', fontSize: '0.8rem', fontStyle: 'italic' }}>{getReasoning('reviews_score').short}</p>
+          )}
         </div>
-        <div onClick={() => handleMetricClick('accessibility_score')} title="View accessibility details" style={{ background: 'rgba(255,255,255,0.12)', padding: 20, borderRadius: 18, border: '1px solid rgba(255,255,255,0.25)', cursor: 'pointer' }}>
+        <div onClick={() => handleMetricClick('accessibility_score')} title={getReasoning('accessibility_score').short || 'View accessibility details'} style={{ background: 'rgba(255,255,255,0.12)', padding: 20, borderRadius: 18, border: '1px solid rgba(255,255,255,0.25)', cursor: 'pointer' }} role="button" tabIndex={0} data-nav="cards" onKeyDown={(e) => activateOnKey(e, () => handleMetricClick('accessibility_score'))}>
           <h4 style={{ margin: '0 0 10px 0', color: '#fff' }}>Accessibility (Informational)</h4>
           <p style={{ margin: 0, color: '#eee', fontSize: '0.9rem' }}>Score: {scores.accessibility_score ?? 'N/A'} (Heuristic blend)</p>
           {(() => {
@@ -379,17 +711,20 @@ const ScoreDashboard = React.memo(({ scores, game }) => {
               </p>
             );
           })()}
+          {getReasoning('accessibility_score').short && (
+            <p style={{ margin: '6px 0 0 0', color: '#ddd', fontSize: '0.8rem', fontStyle: 'italic' }}>{getReasoning('accessibility_score').short}</p>
+          )}
         </div>
-        <div onClick={() => handleMetricClick('life_support')} title="View life support details" style={{ background: 'rgba(255,255,255,0.12)', padding: 20, borderRadius: 18, border: `1px solid ${lifeSupportColor}55`, cursor: 'pointer' }}>
+        <div onClick={() => handleMetricClick('life_support')} title={getReasoning('life_support').short || 'View life support details'} style={{ background: 'rgba(255,255,255,0.12)', padding: 20, borderRadius: 18, border: `1px solid ${lifeSupportColor}55`, cursor: 'pointer' }} role="button" tabIndex={0} data-nav="cards" onKeyDown={(e) => activateOnKey(e, () => handleMetricClick('life_support'))}>
           <h4 style={{ margin: '0 0 10px 0', color: '#fff' }}>Life Support (Informational)</h4>
           <p style={{ margin: 0, color: '#eee', fontSize: '0.9rem' }}>
             {lifeSupportLabel}{lifeSupport.last_update_date ? ` • Updated: ${lifeSupport.last_update_date}` : ''}
           </p>
         </div>
-        {scores?.reasoning?.life_support_inferred && (
-          <div onClick={() => handleMetricClick('life_support_inferred')} title="View inferred life support details" style={{ background: 'rgba(255,255,255,0.12)', padding: 20, borderRadius: 18, border: '1px solid rgba(255,255,255,0.25)', cursor: 'pointer' }}>
+        {(localScores || scores)?.reasoning?.life_support_inferred && (
+          <div onClick={() => handleMetricClick('life_support_inferred')} title={getReasoning('life_support_inferred').short || 'View inferred life support details'} style={{ background: 'rgba(255,255,255,0.12)', padding: 20, borderRadius: 18, border: '1px solid rgba(255,255,255,0.25)', cursor: 'pointer' }} role="button" tabIndex={0} data-nav="cards" onKeyDown={(e) => activateOnKey(e, () => handleMetricClick('life_support_inferred'))}>
             <h4 style={{ margin: '0 0 10px 0', color: '#fff' }}>Inferred Life Support (AI)</h4>
-            <p style={{ margin: 0, color: '#eee', fontSize: '0.9rem' }}>{scores.reasoning.life_support_inferred.short}</p>
+            <p style={{ margin: 0, color: '#eee', fontSize: '0.9rem' }}>{(localScores || scores).reasoning.life_support_inferred.short}</p>
           </div>
         )}
       </div>
@@ -414,8 +749,8 @@ const ScoreDashboard = React.memo(({ scores, game }) => {
       </div>
 
       {/* Metric reasoning modal */}
-      {showModal && selectedMetric && selectedReasoning && (
-        <div onClick={closeModal} style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0, 0, 0, 0.8)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 }}>
+      {showModal && selectedMetric && selectedReasoning && createPortal(
+        <div onClick={closeModal} style={{ position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, background: 'rgba(0, 0, 0, 0.8)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999 }}>
           <div onClick={(e) => e.stopPropagation()} style={{ background: 'rgba(255, 255, 255, 0.95)', borderRadius: 20, padding: 30, maxWidth: 500, maxHeight: '70vh', overflowY: 'auto', border: '1px solid rgba(255, 255, 255, 0.3)', boxShadow: '0 10px 40px rgba(0, 0, 0, 0.2)' }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
               <h3 style={{ margin: 0, color: '#333', fontSize: '1.5rem', fontWeight: 600 }}>
@@ -435,12 +770,13 @@ const ScoreDashboard = React.memo(({ scores, game }) => {
               {selectedMetric === 'monetisation' ? renderMonetisation(selectedReasoning) : renderDetailed(selectedReasoning)}
             </div>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
 
       {/* Game Preview modal with tabs */}
-      {showGamePreview && (
-        <div onClick={() => setShowGamePreview(false)} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1100 }}>
+      {showGamePreview && createPortal(
+        <div onClick={() => setShowGamePreview(false)} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999 }}>
           <div onClick={(e) => e.stopPropagation()} style={{ width: 'min(1100px, 98vw)', background: 'rgba(255,255,255,0.98)', borderRadius: 18, border: '1px solid rgba(0,0,0,0.08)', boxShadow: '0 12px 36px rgba(0,0,0,0.3)', overflow: 'hidden' }}>
             <div style={{ display: 'flex', padding: 16, alignItems: 'center', borderBottom: '1px solid rgba(0,0,0,0.08)' }}>
               <h3 style={{ margin: 0, fontSize: '1.4rem', fontWeight: 600, color: '#222', flex: 1 }}>{game.title}</h3>
@@ -448,18 +784,45 @@ const ScoreDashboard = React.memo(({ scores, game }) => {
             </div>
             {/* Increase grid gap and padding for modal content area */}
             <div style={{ display: 'grid', gridTemplateColumns: '260px 1fr', gap: 20, padding: 20 }}>
-              <div>
+              <div style={{ position: 'relative' }}>
                 {game.cover_image ? (
                   <img src={game.cover_image} alt={`${game.title} cover`} style={{ width: '100%', height: 320, objectFit: 'cover', borderRadius: 12, border: '1px solid rgba(0,0,0,0.08)' }} />
                 ) : (
                   <div style={{ width: '100%', height: 320, borderRadius: 12, border: '1px dashed rgba(0,0,0,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#777' }}>No image</div>
                 )}
+                {typeof scores.overall_score === 'number' && (
+                  <div
+                    title={`Overall Score: ${scores.overall_score}%`}
+                    aria-label={`Overall Score ${scores.overall_score} percent`}
+                    style={{
+                      position: 'absolute', top: 10, left: 10, width: 72, height: 72, borderRadius: '50%',
+                      background: overallScoreColor, color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                      fontWeight: 800, fontSize: '1.1rem', boxShadow: '0 6px 16px rgba(0,0,0,0.25)', border: '3px solid #fff'
+                    }}
+                  >
+                    {String(scores.overall_score)}%
+                  </div>
+                )}
               </div>
               {/* Increase vertical spacing between tab bar and content */}
               <div style={{ display: 'grid', gap: 16 }}>
-                <div style={{ display: 'flex', gap: 10, borderBottom: '1px solid #e5e7eb', marginBottom: 8, paddingBottom: 4 }}>
+                <div role="tablist" aria-label="Game preview tabs" style={{ display: 'flex', gap: 10, borderBottom: '1px solid #e5e7eb', marginBottom: 8, paddingBottom: 4 }}
+                  onKeyDown={(e) => {
+                    const order = ['overview','description','awards'];
+                    const idx = order.indexOf(previewTab);
+                    if (e.key === 'ArrowRight') {
+                      e.preventDefault();
+                      const next = order[(idx + 1) % order.length];
+                      setPreviewTab(next);
+                    } else if (e.key === 'ArrowLeft') {
+                      e.preventDefault();
+                      const prev = order[(idx - 1 + order.length) % order.length];
+                      setPreviewTab(prev);
+                    }
+                  }}
+                >
                   {['overview', 'description', 'awards'].map(tab => (
-                    <button key={tab} onClick={() => setPreviewTab(tab)} style={{ border: 'none', background: previewTab === tab ? '#0ea5e9' : 'transparent', color: previewTab === tab ? '#fff' : '#0f172a', padding: '8px 12px', borderRadius: 8, cursor: 'pointer', fontWeight: 600 }}>
+                    <button role="tab" aria-selected={previewTab === tab} key={tab} onClick={() => setPreviewTab(tab)} style={{ border: 'none', background: previewTab === tab ? '#0ea5e9' : 'transparent', color: previewTab === tab ? '#fff' : '#0f172a', padding: '8px 12px', borderRadius: 8, cursor: 'pointer', fontWeight: 600 }}>
                       {tab === 'overview' ? 'Overview' : tab === 'description' ? 'Description' : 'Awards'}
                     </button>
                   ))}
@@ -472,6 +835,9 @@ const ScoreDashboard = React.memo(({ scores, game }) => {
                       <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, color: '#333' }}>
                         {game.release_year && <span style={{ padding: '6px 10px', background: '#eef2ff', borderRadius: 8, border: '1px solid #dbe4ff' }}>Year: <strong>{game.release_year}</strong></span>}
                         {game.release_date && <span style={{ padding: '6px 10px', background: '#f0f9ff', borderRadius: 8, border: '1px solid #cff0ff' }}>Released: <strong>{game.release_date}</strong></span>}
+                        {rawgDetails?.age_rating && (
+                          <span style={{ padding: '6px 10px', background: '#fef3c7', borderRadius: 8, border: '1px solid #fde68a' }}>Age Rating: <strong>{rawgDetails.age_rating}</strong></span>
+                        )}
                       </div>
                       {(() => {
                         const list = Array.isArray(game.platforms) && game.platforms.length > 0 ? game.platforms : (game.platform ? [game.platform] : []);
@@ -487,6 +853,32 @@ const ScoreDashboard = React.memo(({ scores, game }) => {
                           </div>
                         );
                       })()}
+                      {/* RAWG genres/developers/publishers */}
+                      <div style={{ display: 'grid', gap: 8 }}>
+                        {rawgLoading && (
+                          <div style={{ color: '#64748b', fontSize: '0.9rem' }}>Loading RAWG details…</div>
+                        )}
+                        {rawgError && (
+                          <div style={{ color: '#b91c1c', fontSize: '0.9rem' }}>RAWG details unavailable: {rawgError}</div>
+                        )}
+                        {!rawgLoading && !rawgError && (
+                          <>
+                            {Array.isArray(rawgDetails?.genres) && rawgDetails.genres.length > 0 && (
+                              <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8 }}>
+                                {rawgDetails.genres.slice(0, 8).map((g, i) => (
+                                  <span key={`${g}-${i}`} style={{ padding: '6px 10px', background: '#ecfeff', color: '#0f172a', borderRadius: 999, border: '1px solid #a5f3fc', fontSize: '0.85rem' }}>{g}</span>
+                                ))}
+                              </div>
+                            )}
+                            {(Array.isArray(rawgDetails?.developers) && rawgDetails.developers.length > 0) && (
+                              <div style={{ color: '#374151', fontSize: '0.9rem' }}>Developer: <strong>{rawgDetails.developers.join(', ')}</strong></div>
+                            )}
+                            {(Array.isArray(rawgDetails?.publishers) && rawgDetails.publishers.length > 0) && (
+                              <div style={{ color: '#374151', fontSize: '0.9rem' }}>Publisher: <strong>{rawgDetails.publishers.join(', ')}</strong></div>
+                            )}
+                          </>
+                        )}
+                      </div>
                     </div>
                     <div style={{ color: '#444', fontSize: '0.95rem', marginTop: 10 }}>
                       <p style={{ margin: 0 }}>Overall Score: <strong>{scores.overall_score}%</strong></p>
@@ -520,12 +912,11 @@ const ScoreDashboard = React.memo(({ scores, game }) => {
                         })()}
                       </div>
                     </div>
-                    {scores?.reasoning?.overall_score?.detailed && (
-                      <p style={{ margin: '10px 0 0 0', color: '#555', fontSize: '0.9rem' }}>{scores.reasoning.overall_score.detailed}</p>
+                    {(localScores || scores)?.reasoning?.overall_score?.detailed && (
+                      <p style={{ margin: '10px 0 0 0', color: '#555', fontSize: '0.9rem' }}>{(localScores || scores).reasoning.overall_score.detailed}</p>
                     )}
                   </div>
                 )}
-
                 {previewTab === 'awards' && (
                   <div style={tabCardStyle}>
                     {(() => {
@@ -573,16 +964,56 @@ const ScoreDashboard = React.memo(({ scores, game }) => {
                         {game.title}{game.release_year ? ` (${game.release_year})` : ''}
                         {Array.isArray(game.platforms) && game.platforms.length ? ` • Available on ${game.platforms.join(', ')}` : (game.platform ? ` • Platform: ${game.platform}` : '')}
                       </p>
-                      <p style={{ marginBottom: 10, color: '#334155' }}>
-                        {scores?.reasoning?.presentation?.detailed?.explanation || scores?.reasoning?.overall_score?.detailed || 'A popular title evaluated by our rubric for gameplay, story, presentation, performance, innovation, and community.'}
+                      <p style={{ marginBottom: 10, color: '#334155', whiteSpace: 'pre-wrap' }}>
+                        {rawgLoading ? 'Loading RAWG description…' : (rawgDescDisplay || 'No description available.')}
                       </p>
+                      {canExpandDesc && !rawgLoading && (
+                        <button onClick={() => setDescExpanded(v => !v)} style={{ border: '1px solid #cbd5e1', background: '#fff', color: '#0f172a', borderRadius: 8, padding: '6px 10px', cursor: 'pointer' }}>
+                          {descExpanded ? 'Show less' : 'Show more'}
+                        </button>
+                      )}
                       <div style={{ marginTop: 10 }}>
                         <div style={{ fontWeight: 600, color: '#0f172a', marginBottom: 6 }}>Why play</div>
                         <ul style={{ margin: 0, padding: '0 0 0 18px' }}>
-                          <li style={{ marginBottom: 6 }}>{scores?.reasoning?.core_gameplay?.short || 'Strong core gameplay loop.'}</li>
-                          <li style={{ marginBottom: 6 }}>{scores?.reasoning?.story_immersion?.short || 'Engaging narrative and worldbuilding.'}</li>
-                          <li style={{ marginBottom: 6 }}>{scores?.reasoning?.innovation_creativity?.short || 'Notable creativity or genre impact.'}</li>
+                          <li style={{ marginBottom: 6 }}>{(localScores || scores)?.reasoning?.core_gameplay?.short || 'Strong core gameplay loop.'}</li>
+                          <li style={{ marginBottom: 6 }}>{(localScores || scores)?.reasoning?.story_immersion?.short || 'Engaging narrative and worldbuilding.'}</li>
+                          <li style={{ marginBottom: 6 }}>{(localScores || scores)?.reasoning?.innovation_creativity?.short || 'Notable creativity or genre impact.'}</li>
                         </ul>
+                      </div>
+                      {/* Tone toggle + rewrite preview */}
+                      <div style={{ marginTop: 16, paddingTop: 12, borderTop: '1px solid #e5e7eb' }}>
+                        <div style={{ display: 'flex', gap: 10, alignItems: 'center', flexWrap: 'wrap', marginBottom: 8 }}>
+                          <label style={{ fontWeight: 600, color: '#0f172a' }}>Tone</label>
+                          <select value={tone} onChange={(e) => setTone(e.target.value)} style={{ padding: '6px 8px', borderRadius: 8, border: '1px solid #cbd5e1', background: '#fff', color: '#0f172a' }}>
+                            {Object.keys(toneStyles).map((k) => (
+                              <option key={k} value={k}>{k}</option>
+                            ))}
+                          </select>
+                          <button onClick={handleRewrite} disabled={!aiFeedbackEnabled || rewriteLoading || !rewriteBase} style={{ background: '#0ea5e9', color: '#fff', border: 'none', borderRadius: 8, padding: '8px 12px', cursor: (!aiFeedbackEnabled || rewriteLoading) ? 'not-allowed' : 'pointer', opacity: (!aiFeedbackEnabled || rewriteLoading) ? 0.7 : 1 }}>
+                            {rewriteLoading ? 'Rewriting…' : 'Rewrite description'}
+                          </button>
+                          <button onClick={handleRewriteMetrics} disabled={!aiFeedbackEnabled} style={{ background: '#10b981', color: '#fff', border: 'none', borderRadius: 8, padding: '8px 12px', cursor: !aiFeedbackEnabled ? 'not-allowed' : 'pointer', opacity: !aiFeedbackEnabled ? 0.7 : 1 }}>
+                            Rewrite metrics too
+                          </button>
+                        </div>
+                        <div style={{ display: 'grid', gap: 8 }}>
+                          <textarea value={rewriteBase} onChange={(e) => setRewriteBase(e.target.value)} rows={3} style={{ width: '100%', borderRadius: 8, border: '1px solid #cbd5e1', padding: 8, fontSize: '0.9rem', color: '#0f172a' }} />
+                          {aiFeedbackEnabled && rewriteOut && (
+                            <div style={{ background: '#ffffff', border: '1px solid #e5e7eb', borderRadius: 8, padding: 10 }}>
+                              <div style={{ color: '#0f172a', whiteSpace: 'pre-wrap' }}>{rewriteOut.text}</div>
+                              {aiFeedbackEnabled && process.env.NODE_ENV !== 'production' && (
+                                <div style={{ marginTop: 6, fontSize: '0.75rem', color: '#64748b' }}>
+                                  provider: {rewriteOut.provider || 'unknown'}{rewriteOut.used_model ? ` • model: ${rewriteOut.used_model}` : ''}
+                                </div>
+                              )}
+                            </div>
+                          )}
+                          {metricsRewriteInfo && aiFeedbackEnabled && process.env.NODE_ENV !== 'production' && (
+                            <div style={{ marginTop: 6, fontSize: '0.75rem', color: '#64748b' }}>
+                              metrics rewritten via {metricsRewriteInfo.provider}{metricsRewriteInfo.used_model ? ` • model: ${metricsRewriteInfo.used_model}` : ''}
+                            </div>
+                          )}
+                        </div>
                       </div>
                     </div>
                   </div>
@@ -590,7 +1021,8 @@ const ScoreDashboard = React.memo(({ scores, game }) => {
               </div>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body
       )}
     </div>
   );

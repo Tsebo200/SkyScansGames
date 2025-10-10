@@ -16,6 +16,7 @@ try:
 except ImportError:  # Fallback if not installed yet
     BeautifulSoup = None  # type: ignore
 import asyncio
+import random
 from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import time
@@ -48,9 +49,15 @@ USE_LLM_INNOVATION = os.getenv("USE_LLM_INNOVATION", "0").lower() in ("1","true"
 # Opt-in flag to apply heuristic monetisation defaults automatically during scans (off by default)
 AUTO_MONETISATION_DEFAULTS = os.getenv("AUTO_MONETISATION_DEFAULTS", "0").lower() in ("1","true","yes")
 
+# Anthropic (Claude) configuration for fun/gamey tone rewrites
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL", "claude-3-5-sonnet-20240620")
+
 # Caching configuration
-API_CACHE_TTL = 1800  # 30 minutes for API responses
-SEARCH_CACHE_TTL = 600  # 10 minutes for search results
+# Set via env to extend TTLs in offline scenarios or disable expiry checks entirely
+API_CACHE_TTL = int(os.getenv("API_CACHE_TTL", "1800"))  # default 30 minutes for API responses
+SEARCH_CACHE_TTL = int(os.getenv("SEARCH_CACHE_TTL", "600"))  # default 10 minutes for search results
+API_CACHE_DISABLE_EXPIRY = os.getenv("API_CACHE_DISABLE_EXPIRY", "0").lower() in ("1","true","yes")
 
 @lru_cache(maxsize=100)
 def get_cache_key(url: str, params: str = "") -> str:
@@ -61,13 +68,23 @@ def get_cache_key(url: str, params: str = "") -> str:
 def get_cached_response(cache_key: str) -> dict:
     """Get cached API response from database"""
     with get_db() as conn:
-        result = conn.execute("""
-            SELECT response, expires_at FROM api_cache 
-            WHERE id = ? AND expires_at > datetime('now')
-        """, (cache_key,)).fetchone()
-        
+        if API_CACHE_DISABLE_EXPIRY:
+            result = conn.execute("""
+                SELECT response FROM api_cache 
+                WHERE id = ?
+            """, (cache_key,)).fetchone()
+        else:
+            result = conn.execute("""
+                SELECT response FROM api_cache 
+                WHERE id = ? AND expires_at > datetime('now')
+            """, (cache_key,)).fetchone()
         if result:
-            return json.loads(result[0])
+            # result may be a tuple with only response or response+expires_at
+            resp = result[0]
+            try:
+                return json.loads(resp)
+            except Exception:
+                return None
     return None
 
 def set_cached_response(cache_key: str, response: dict, ttl: int):
@@ -728,6 +745,20 @@ def init_db():
             )
         ''')
 
+        # RAWG details snapshot table for offline usage
+        conn.execute('''
+            CREATE TABLE IF NOT EXISTS rawg_detail_snapshots (
+                game_id INTEGER PRIMARY KEY,
+                description TEXT,
+                genres_json TEXT,
+                developers_json TEXT,
+                publishers_json TEXT,
+                age_rating TEXT,
+                updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (game_id) REFERENCES games(id)
+            )
+        ''')
+
         # Insert mock data if tables are empty
         if not conn.execute("SELECT COUNT(*) FROM games").fetchone()[0]:
             mock_games_data = [
@@ -907,7 +938,11 @@ def generate_scores_from_api(game_data: dict, steam_data: dict = None) -> dict:
 
     rating_raw = game_data.get("rating")
     if not isinstance(rating_raw, (int, float)):
-        rating_raw = 0.0
+        # Fallback: derive an approximate 0-5 from metacritic if RAWG user rating missing
+        try:
+            rating_raw = (metacritic / 20.0) if isinstance(metacritic, (int, float)) else 3.5
+        except Exception:
+            rating_raw = 3.5
     rating = max(0.0, min(5.0, float(rating_raw)))
 
     release_year = 2020
@@ -1169,10 +1204,15 @@ def generate_scores_from_api(game_data: dict, steam_data: dict = None) -> dict:
 # Initialize database on startup
 # init_db()  # Removed from here - will be called in startup event
 
-# CORS for frontend
+# CORS for frontend (configurable via env)
+_allowed = os.getenv("ALLOWED_ORIGINS", "http://localhost:3000,http://localhost:3001")
+try:
+    ALLOWED_ORIGINS = [o.strip() for o in _allowed.split(',') if o.strip()]
+except Exception:
+    ALLOWED_ORIGINS = ["http://localhost:3000", "http://localhost:3001"]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://localhost:3001"],
+    allow_origins=ALLOWED_ORIGINS,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -1282,10 +1322,14 @@ def classify_monetisation(details: dict) -> dict:
         if explicit_p2w_no:
             has_p2w = False
         else:
+            # Consider flexible negations like 'no explicit pay-to-win' or 'not pay to win'
+            negated_pay_to_win = bool(re.search(r'(no|not|without)\s+(?:\w+\s+){0,3}pay\s*-?to\s*-?win', joined)) or 'no p2w' in joined
+            mentions_pay_to_win = (('pay-to-win' in joined) or ('pay to win' in joined))
+            tactic_hits = any(tok in joined for tok in ['gameplay advantage','stat boost','xp boost','xp advantage','power boost'])
             has_p2w = (
-                'p2w: yes' in joined or
-                (('pay-to-win' in joined or 'pay to win' in joined) and not ('no pay-to-win' in joined or 'no pay to win' in joined or 'not pay to win' in joined)) or
-                'gameplay advantage' in joined or 'stat boost' in joined or 'xp boost' in joined or 'xp advantage' in joined or 'power boost' in joined or 'p2w: mixed' in joined
+                ('p2w: yes' in joined) or
+                (mentions_pay_to_win and not negated_pay_to_win) or
+                tactic_hits
             )
 
         if has_p2w:
@@ -1300,6 +1344,104 @@ def classify_monetisation(details: dict) -> dict:
     except Exception:
         return {"label": "Unknown", "color": "#7f8c8d"}
 
+def infer_monetisation_heuristic(rawg_details: dict | None, steam_data: dict | None) -> dict | None:
+    """Infer monetisation using lightweight heuristics from RAWG details and Steam categories.
+    Returns a dict suitable for classify_monetisation with keys: types (list[str]), notes (str), tactics (list[str]).
+    """
+    try:
+        types: list[str] = []
+        notes_parts: list[str] = []
+        text_blobs: list[str] = []
+        if isinstance(rawg_details, dict) and rawg_details:
+            desc = rawg_details.get('description_raw') or rawg_details.get('description') or ''
+            text_blobs.append(desc)
+            tag_names = [t.get('name') for t in (rawg_details.get('tags') or []) if isinstance(t, dict) and t.get('name')]
+            if tag_names:
+                text_blobs.append(' '.join(tag_names))
+            genre_names = [g.get('name') for g in (rawg_details.get('genres') or []) if isinstance(g, dict) and g.get('name')]
+            if genre_names:
+                text_blobs.append(' '.join(genre_names))
+        if isinstance(steam_data, dict) and steam_data:
+            # Steam categories sometimes include 'In-App Purchases'
+            cats = steam_data.get('categories') or []
+            if isinstance(cats, list):
+                for c in cats:
+                    try:
+                        d = (c.get('description') or '').strip().lower()
+                        if 'in-app' in d or 'in app' in d or 'in app purchases' in d or 'in-app purchases' in d:
+                            types.append('In-App Purchases')
+                    except Exception:
+                        continue
+            # some games mention monetisation in short_description
+            sd = steam_data.get('short_description') or ''
+            text_blobs.append(sd)
+        blob = ('\n'.join(text_blobs)).lower()
+        if not blob and not types:
+            return None
+
+        # Signal detection
+        def has(*keywords: str) -> bool:
+            return any(k in blob for k in keywords)
+
+        # Strong signals
+        if has('ultimate team', 'fut'):
+            types.extend(['Ultimate Team (FUT-like)', 'Packs/Player Cards'])
+            notes_parts.append('Ultimate Team/card packs present; online modes may be affected by spend.')
+        if has('battle pass'):
+            types.append('Battle Pass')
+        if has('item shop', 'storefront', 'cash shop'):
+            types.append('Item Shop')
+        if has('loot box', 'lootbox', 'loot boxes', 'gacha'):
+            types.append('Loot Boxes')
+        if has('in-app purchases', 'in app purchases', 'in-app purchase', 'in app purchase', 'microtransactions', 'micro-transaction', 'micro transactions'):
+            types.append('Microtransactions')
+        if has('season pass'):
+            types.append('Season Pass')
+
+        # P2W vs cosmetic-only cues (also collect specific tactic signals)
+        tactic_map = [
+            ('gameplay advantage', 'gameplay advantage'),
+            ('stat boost', 'stat boost'),
+            ('xp boost', 'xp boost'),
+            ('xp advantage', 'xp advantage'),
+            ('power boost', 'power boost'),
+            ('competitive advantage', 'competitive advantage'),
+        ]
+        tactics: list[str] = []
+        for key, label in tactic_map:
+            if key in blob:
+                tactics.append(label)
+        p2w_explicit = has('pay-to-win', 'pay to win') or bool(tactics)
+        cosmetic_only = has('cosmetic only', 'cosmetics only', 'purely cosmetic', 'cosmetic items only')
+        if p2w_explicit:
+            types.append('P2W: Yes')
+            notes_parts.append('Text mentions gameplay advantage from spend.')
+        elif cosmetic_only and types:
+            types.append('P2W: No')
+            types.append('Cosmetic MTX')
+            notes_parts.append('Text indicates cosmetics only; no gameplay edge.')
+        elif types:
+            # Monetisation present but fairness unclear; do NOT mark as P2W without signals
+            notes_parts.append('Monetisation present; no explicit pay-to-win signals in text.')
+        else:
+            # No signals
+            return None
+
+        # Deduplicate and normalise
+        out_types = []
+        seen = set()
+        for t in types:
+            if not isinstance(t, str):
+                continue
+            tt = t.strip()
+            if tt and tt not in seen:
+                out_types.append(tt)
+                seen.add(tt)
+        notes = ' '.join(notes_parts).strip() or None
+        return {'types': out_types, 'notes': notes, 'tactics': tactics}
+    except Exception:
+        return None
+
 @app.get("/api/games/search", response_model=List[Game])
 async def search_games(q: str, page: int = 1, page_size: int = 10):
     """Search games via RAWG API with pagination and store minimal metadata locally.
@@ -1312,7 +1454,8 @@ async def search_games(q: str, page: int = 1, page_size: int = 10):
     rawg_results = rawg_client.search_games(q, page_size=page_size, page=page)
     games: List[Game] = []
     with get_db() as conn:
-        for game_data in rawg_results.get("results", []):
+        results_list = rawg_results.get("results", []) if isinstance(rawg_results, dict) else []
+        for game_data in results_list:
             rawg_id = game_data.get("id")
             title = game_data.get("name", "Unknown Title")
             platform = "multi-platform"
@@ -1376,6 +1519,21 @@ async def search_games(q: str, page: int = 1, page_size: int = 10):
                 gdict['platforms'] = platform_names if platform_names else None
                 games.append(Game(**gdict))
         conn.commit()
+        # Local search fallback when RAWG gives no results (offline)
+        if not games:
+            try:
+                like = f"%{q}%"
+                offset = max(0, (page - 1) * page_size)
+                rows = conn.execute(
+                    "SELECT * FROM games WHERE title LIKE ? ORDER BY updated_at DESC LIMIT ? OFFSET ?",
+                    (like, page_size, offset)
+                ).fetchall()
+                for row in rows:
+                    gdict = dict(row)
+                    gdict['platforms'] = None
+                    games.append(Game(**gdict))
+            except Exception:
+                pass
     return games
 
 @app.get("/api/games/search-details")
@@ -1441,6 +1599,82 @@ async def api_search_games_with_details(q: str, page: int = 1, page_size: int = 
     """
     return await search_games_with_details(q=q, page=page, page_size=page_size)
 
+@app.get("/api/games/{game_id}/rawg-details")
+async def get_game_rawg_details(game_id: int, refresh: bool = False):
+    """Return RAWG details for a game, serving from local snapshot when available.
+
+    If refresh=true, attempts to fetch fresh details and update the snapshot; otherwise returns snapshot first.
+    """
+    def normalize(raw: dict) -> dict:
+        desc = raw.get('description_raw') or raw.get('description') or None
+        if isinstance(desc, str):
+            desc = desc if len(desc) <= 8000 else (desc[:8000] + '…')
+        genres = [d.get('name') for d in (raw.get('genres') or []) if isinstance(d, dict) and d.get('name')]
+        developers = [d.get('name') for d in (raw.get('developers') or []) if isinstance(d, dict) and d.get('name')]
+        publishers = [d.get('name') for d in (raw.get('publishers') or []) if isinstance(d, dict) and d.get('name')]
+        esrb = None
+        er = raw.get('esrb_rating')
+        if isinstance(er, dict):
+            esrb = er.get('name')
+        elif isinstance(er, str):
+            esrb = er
+        return {
+            'description': desc,
+            'genres': genres or [],
+            'developers': developers or [],
+            'publishers': publishers or [],
+            'age_rating': esrb
+        }
+
+    with get_db() as conn:
+        game = conn.execute("SELECT * FROM games WHERE id = ?", (game_id,)).fetchone()
+        if not game:
+            raise HTTPException(status_code=404, detail="Game not found")
+        # Serve snapshot if present and not forcing refresh
+        if not refresh:
+            snap = conn.execute("SELECT description, genres_json, developers_json, publishers_json, age_rating FROM rawg_detail_snapshots WHERE game_id = ?", (game_id,)).fetchone()
+            if snap:
+                try:
+                    return {
+                        'description': snap[0],
+                        'genres': json.loads(snap[1] or '[]'),
+                        'developers': json.loads(snap[2] or '[]'),
+                        'publishers': json.loads(snap[3] or '[]'),
+                        'age_rating': snap[4]
+                    }
+                except Exception:
+                    pass
+        rawg_id = dict(game).get('rawg_id')
+        if not rawg_id:
+            return {'description': None, 'genres': [], 'developers': [], 'publishers': [], 'age_rating': None}
+        # Try to fetch from RAWG and persist snapshot
+        try:
+            details = rawg_client.get_game_details(rawg_id) or {}
+            if not isinstance(details, dict):
+                details = {}
+            norm = normalize(details)
+            conn.execute(
+                "REPLACE INTO rawg_detail_snapshots (game_id, description, genres_json, developers_json, publishers_json, age_rating, updated_at) VALUES (?,?,?,?,?,?, CURRENT_TIMESTAMP)",
+                (game_id, norm['description'], json.dumps(norm['genres']), json.dumps(norm['developers']), json.dumps(norm['publishers']), norm['age_rating'])
+            )
+            conn.commit()
+            return norm
+        except Exception:
+            # If offline and snapshot exists, return it; else empty
+            snap2 = conn.execute("SELECT description, genres_json, developers_json, publishers_json, age_rating FROM rawg_detail_snapshots WHERE game_id = ?", (game_id,)).fetchone()
+            if snap2:
+                try:
+                    return {
+                        'description': snap2[0],
+                        'genres': json.loads(snap2[1] or '[]'),
+                        'developers': json.loads(snap2[2] or '[]'),
+                        'publishers': json.loads(snap2[3] or '[]'),
+                        'age_rating': snap2[4]
+                    }
+                except Exception:
+                    pass
+            return {'description': None, 'genres': [], 'developers': [], 'publishers': [], 'age_rating': None}
+
 @app.post("/api/games/{game_id}/scan")
 async def scan_game(game_id: int, force: bool = False, apply_defaults: bool = False):
     with get_db() as conn:
@@ -1458,11 +1692,92 @@ async def scan_game(game_id: int, force: bool = False, apply_defaults: bool = Fa
                 score_dict["reasoning"] = json.loads(score_dict["reasoning"])
             except Exception:
                 pass
+            # Auto-refresh monetisation here too so rescans upgrade Unknown without forcing
+            try:
+                mon = (score_dict.get('reasoning') or {}).get('monetisation')
+                det = (mon or {}).get('detailed') if isinstance(mon, dict) else None
+                label = (det or {}).get('fairness_label') if isinstance(det, dict) else None
+                needs_refresh = (not label) or (str(label).lower() == 'unknown')
+                if needs_refresh:
+                    # Fetch RAWG/Steam for heuristic
+                    rawg_id2 = dict(game).get('rawg_id')
+                    rawg_details2 = rawg_client.get_game_details(rawg_id2) if rawg_id2 else {}
+                    try:
+                        steam_id2 = dict(game).get('steam_id')
+                    except Exception:
+                        steam_id2 = None
+                    steam_data2 = steam_client.get_app_details(steam_id2) if steam_id2 else {}
+                    inferred = infer_monetisation_heuristic(rawg_details2, steam_data2)
+                    if inferred:
+                        fair = classify_monetisation(inferred)
+                        score_dict.setdefault('reasoning', {})['monetisation'] = {
+                            'short': 'Monetisation (inferred heuristic)',
+                            'detailed': {
+                                'types': inferred.get('types', []),
+                                'notes': inferred.get('notes'),
+                                'tactics': inferred.get('tactics') or [],
+                                'fairness_label': fair.get('label'),
+                                'fairness_color': fair.get('color'),
+                                'fairness_source': 'heuristic',
+                                'confidence': 0.5
+                            }
+                        }
+                    else:
+                        # Defaults to avoid Unknown
+                        is_free = False
+                        try:
+                            if isinstance(steam_data2, dict) and steam_data2:
+                                is_free = bool(steam_data2.get('is_free'))
+                        except Exception:
+                            is_free = False
+                        ftplay_text = ''
+                        try:
+                            ftplay_text = ((rawg_details2.get('description_raw') or rawg_details2.get('description') or '') + ' ' + ' '.join([t.get('name','') for t in (rawg_details2.get('tags') or []) if isinstance(t, dict)])).lower()
+                        except Exception:
+                            pass
+                        has_f2p_cues = is_free or ('free to play' in ftplay_text) or ('free-to-play' in ftplay_text)
+                        if has_f2p_cues:
+                            assumed = {'types': ['In-App Purchases'], 'notes': 'Defaulted from Free-to-Play cues; MTX typical, fairness assumed.'}
+                            fair = classify_monetisation(assumed)
+                            score_dict.setdefault('reasoning', {})['monetisation'] = {
+                                'short': 'Monetisation (assumed from F2P)',
+                                'detailed': {
+                                    'types': assumed['types'],
+                                    'notes': assumed['notes'],
+                                    'fairness_label': fair.get('label'),
+                                    'fairness_color': fair.get('color'),
+                                    'fairness_source': 'assumed-f2p',
+                                    'confidence': 0.45
+                                }
+                            }
+                        else:
+                            assumed = {'types': [], 'notes': 'No monetisation signals detected from public info; treated as none until proven otherwise.'}
+                            fair = classify_monetisation(assumed)
+                            score_dict.setdefault('reasoning', {})['monetisation'] = {
+                                'short': 'Monetisation (no signals found)',
+                                'detailed': {
+                                    'types': assumed['types'],
+                                    'notes': assumed['notes'],
+                                    'fairness_label': fair.get('label'),
+                                    'fairness_color': fair.get('color'),
+                                    'fairness_source': 'assumed-default',
+                                    'confidence': 0.35
+                                }
+                            }
+                    # Persist upgrade
+                    conn.execute("UPDATE scores SET reasoning = ?, updated_at = CURRENT_TIMESTAMP WHERE game_id = ?", (json.dumps(score_dict['reasoning']), game_id))
+                    conn.commit()
+            except Exception:
+                pass
             return {"status": "completed", "scores": score_dict}
 
         # Get detailed game data from RAWG API
         game_dict = dict(game)
         rawg_id = game_dict.get("rawg_id")
+        # Prepare containers so we can apply monetisation defaults even without RAWG/Steam
+        rawg_details = {}
+        steam_data = {}
+        steam_id = None
 
         community_telemetry = None
         if rawg_id:
@@ -1505,12 +1820,32 @@ async def scan_game(game_id: int, force: bool = False, apply_defaults: bool = Fa
             # Debug logging for data verification
             print(f"RAWG data for game {rawg_id}: Metacritic={rawg_details.get('metacritic')}, Rating={rawg_details.get('rating')}")
 
-            steam_data = {}
-
             # Try to get Steam data if steam_id exists
             steam_id = game_dict.get("steam_id")
             if steam_id:
                 steam_data = steam_client.get_app_details(steam_id)
+
+            # Persist RAWG detail snapshot for offline serving
+            try:
+                desc = rawg_details.get('description_raw') or rawg_details.get('description') if isinstance(rawg_details, dict) else None
+                if isinstance(desc, str) and len(desc) > 8000:
+                    desc = desc[:8000] + '…'
+                genres = [d.get('name') for d in (rawg_details.get('genres') or []) if isinstance(d, dict) and d.get('name')] if isinstance(rawg_details, dict) else []
+                developers = [d.get('name') for d in (rawg_details.get('developers') or []) if isinstance(d, dict) and d.get('name')] if isinstance(rawg_details, dict) else []
+                publishers = [d.get('name') for d in (rawg_details.get('publishers') or []) if isinstance(d, dict) and d.get('name')] if isinstance(rawg_details, dict) else []
+                esrb = None
+                er = rawg_details.get('esrb_rating') if isinstance(rawg_details, dict) else None
+                if isinstance(er, dict):
+                    esrb = er.get('name')
+                elif isinstance(er, str):
+                    esrb = er
+                conn.execute(
+                    "REPLACE INTO rawg_detail_snapshots (game_id, description, genres_json, developers_json, publishers_json, age_rating, updated_at) VALUES (?,?,?,?,?,?, CURRENT_TIMESTAMP)",
+                    (game_id, desc, json.dumps(genres or []), json.dumps(developers or []), json.dumps(publishers or []), esrb)
+                )
+                conn.commit()
+            except Exception as e:
+                print(f"RAWG snapshot persist error: {e}")
 
             # Persist / compute community telemetry BEFORE generating scores so we can override placeholders
             try:
@@ -1582,6 +1917,74 @@ async def scan_game(game_id: int, force: bool = False, apply_defaults: bool = Fa
                     ad['heuristic_score_component'] = acc.get('heuristic_score')
             except Exception as e:
                 print(f"Accessibility heuristic error: {e}")
+            # Heuristic monetisation inference if no override present
+            try:
+                # If the current score_data has only a placeholder/unknown monetisation, try to enrich
+                mon = score_data.get('reasoning', {}).get('monetisation')
+                mon_det = (mon or {}).get('detailed') if isinstance(mon, dict) else None
+                existing_fairness = (mon_det or {}).get('fairness_label') if isinstance(mon_det, dict) else None
+                if not existing_fairness:
+                    inferred = infer_monetisation_heuristic(rawg_details, steam_data)
+                    if inferred:
+                        fair = classify_monetisation(inferred)
+                        score_data.setdefault('reasoning', {})['monetisation'] = {
+                            'short': 'Monetisation (inferred heuristic)',
+                            'detailed': {
+                                'types': inferred.get('types', []),
+                                'notes': inferred.get('notes'),
+                                'tactics': inferred.get('tactics') or [],
+                                'fairness_label': fair.get('label'),
+                                'fairness_color': fair.get('color'),
+                                'fairness_source': 'heuristic',
+                                'confidence': 0.5
+                            }
+                        }
+                    else:
+                        # No signals found: choose a sensible default to avoid 'Unknown'
+                        # If Free-to-Play cues exist, assume MTX present but no explicit P2W -> Fair (low confidence)
+                        is_free = False
+                        try:
+                            if isinstance(steam_data, dict) and steam_data:
+                                is_free = bool(steam_data.get('is_free'))
+                        except Exception:
+                            is_free = False
+                        ftplay_text = ''
+                        try:
+                            ftplay_text = ((rawg_details.get('description_raw') or rawg_details.get('description') or '') + ' ' + ' '.join([t.get('name','') for t in (rawg_details.get('tags') or []) if isinstance(t, dict)])).lower()
+                        except Exception:
+                            pass
+                        has_f2p_cues = is_free or ('free to play' in ftplay_text) or ('free-to-play' in ftplay_text)
+                        if has_f2p_cues:
+                            assumed = {'types': ['In-App Purchases'], 'notes': 'Defaulted from Free-to-Play cues; MTX typical, fairness assumed.'}
+                            fair = classify_monetisation(assumed)
+                            score_data.setdefault('reasoning', {})['monetisation'] = {
+                                'short': 'Monetisation (assumed from F2P)',
+                                'detailed': {
+                                    'types': assumed['types'],
+                                    'notes': assumed['notes'],
+                                    'fairness_label': fair.get('label'),
+                                    'fairness_color': fair.get('color'),
+                                    'fairness_source': 'assumed-f2p',
+                                    'confidence': 0.45
+                                }
+                            }
+                        else:
+                            # No F2P cues and no signals -> assume none present for now (Perfect, low confidence)
+                            assumed = {'types': [], 'notes': 'No monetisation signals detected from public info; treated as none until proven otherwise.'}
+                            fair = classify_monetisation(assumed)
+                            score_data.setdefault('reasoning', {})['monetisation'] = {
+                                'short': 'Monetisation (no signals found)',
+                                'detailed': {
+                                    'types': assumed['types'],
+                                    'notes': assumed['notes'],
+                                    'fairness_label': fair.get('label'),
+                                    'fairness_color': fair.get('color'),
+                                    'fairness_source': 'assumed-default',
+                                    'confidence': 0.35
+                                }
+                            }
+            except Exception as e:
+                print(f"Monetisation heuristic error: {e}")
             # Normalize monetisation block to structured default if not overridden later
             try:
                 mon = score_data.get('reasoning', {}).get('monetisation')
@@ -1679,6 +2082,73 @@ async def scan_game(game_id: int, force: bool = False, apply_defaults: bool = Fa
                 "esrb_rating": {"name": "E10+"}
             }
             score_data = generate_scores_from_api(mock_rawg_data)
+
+        # Final safeguard: ensure monetisation is not left as Unknown even if heuristics above didn't run
+        try:
+            mon = score_data.get('reasoning', {}).get('monetisation')
+            det = (mon or {}).get('detailed') if isinstance(mon, dict) else None
+            label = (det or {}).get('fairness_label') if isinstance(det, dict) else None
+            needs_fix = (not label) or (str(label).lower() == 'unknown')
+            if needs_fix:
+                inferred2 = infer_monetisation_heuristic(rawg_details or {}, steam_data or {})
+                if inferred2:
+                    fair2 = classify_monetisation(inferred2)
+                    score_data.setdefault('reasoning', {})['monetisation'] = {
+                        'short': 'Monetisation (inferred heuristic)',
+                        'detailed': {
+                            'types': inferred2.get('types', []),
+                            'notes': inferred2.get('notes'),
+                            'tactics': inferred2.get('tactics') or [],
+                            'fairness_label': fair2.get('label'),
+                            'fairness_color': fair2.get('color'),
+                            'fairness_source': 'heuristic',
+                            'confidence': 0.5
+                        }
+                    }
+                else:
+                    # Apply defaults: F2P cues => assume IAP; else assume none
+                    is_free = False
+                    try:
+                        if isinstance(steam_data, dict) and steam_data:
+                            is_free = bool(steam_data.get('is_free'))
+                    except Exception:
+                        is_free = False
+                    ftplay_text = ''
+                    try:
+                        ftplay_text = ((rawg_details.get('description_raw') or rawg_details.get('description') or '') + ' ' + ' '.join([t.get('name','') for t in (rawg_details.get('tags') or []) if isinstance(t, dict)])).lower()
+                    except Exception:
+                        pass
+                    has_f2p_cues = is_free or ('free to play' in ftplay_text) or ('free-to-play' in ftplay_text)
+                    if has_f2p_cues:
+                        assumed = {'types': ['In-App Purchases'], 'notes': 'Defaulted from Free-to-Play cues; MTX typical, fairness assumed.'}
+                        fair2 = classify_monetisation(assumed)
+                        score_data.setdefault('reasoning', {})['monetisation'] = {
+                            'short': 'Monetisation (assumed from F2P)',
+                            'detailed': {
+                                'types': assumed['types'],
+                                'notes': assumed['notes'],
+                                'fairness_label': fair2.get('label'),
+                                'fairness_color': fair2.get('color'),
+                                'fairness_source': 'assumed-f2p',
+                                'confidence': 0.45
+                            }
+                        }
+                    else:
+                        assumed = {'types': [], 'notes': 'No monetisation signals detected from public info; treated as none until proven otherwise.'}
+                        fair2 = classify_monetisation(assumed)
+                        score_data.setdefault('reasoning', {})['monetisation'] = {
+                            'short': 'Monetisation (no signals found)',
+                            'detailed': {
+                                'types': assumed['types'],
+                                'notes': assumed['notes'],
+                                'fairness_label': fair2.get('label'),
+                                'fairness_color': fair2.get('color'),
+                                'fairness_source': 'assumed-default',
+                                'confidence': 0.35
+                            }
+                        }
+        except Exception:
+            pass
 
         # Auto-apply monetisation defaults if game title matches known patterns (only if no manual override exists)
         game_title = game_dict.get('title', '')
@@ -1854,6 +2324,84 @@ async def get_game(game_id: int):
         if scores:
             score_dict = dict(scores)
             score_dict["reasoning"] = json.loads(score_dict["reasoning"])
+            # Auto-refresh monetisation if fairness is missing/Unknown so users never see Unknown
+            try:
+                mon = (score_dict.get('reasoning') or {}).get('monetisation')
+                det = (mon or {}).get('detailed') if isinstance(mon, dict) else None
+                label = (det or {}).get('fairness_label') if isinstance(det, dict) else None
+                needs_refresh = (not label) or (str(label).lower() == 'unknown')
+                if needs_refresh:
+                    # Fetch RAWG/Steam data for heuristic
+                    rawg_id = dict(game).get('rawg_id')
+                    rawg_details = rawg_client.get_game_details(rawg_id) if rawg_id else {}
+                    # steam_id may not exist in schema for all rows; guard access
+                    try:
+                        steam_id = dict(game).get('steam_id')
+                    except Exception:
+                        steam_id = None
+                    steam_data = steam_client.get_app_details(steam_id) if steam_id else {}
+                    inferred = infer_monetisation_heuristic(rawg_details, steam_data)
+                    if inferred:
+                        fair = classify_monetisation(inferred)
+                        score_dict.setdefault('reasoning', {})['monetisation'] = {
+                            'short': 'Monetisation (inferred heuristic)',
+                            'detailed': {
+                                'types': inferred.get('types', []),
+                                'notes': inferred.get('notes'),
+                                'tactics': inferred.get('tactics') or [],
+                                'fairness_label': fair.get('label'),
+                                'fairness_color': fair.get('color'),
+                                'fairness_source': 'heuristic',
+                                'confidence': 0.5
+                            }
+                        }
+                    else:
+                        # Apply the same never-Unknown defaults as scan
+                        is_free = False
+                        try:
+                            if isinstance(steam_data, dict) and steam_data:
+                                is_free = bool(steam_data.get('is_free'))
+                        except Exception:
+                            is_free = False
+                        ftplay_text = ''
+                        try:
+                            ftplay_text = ((rawg_details.get('description_raw') or rawg_details.get('description') or '') + ' ' + ' '.join([t.get('name','') for t in (rawg_details.get('tags') or []) if isinstance(t, dict)])).lower()
+                        except Exception:
+                            pass
+                        has_f2p_cues = is_free or ('free to play' in ftplay_text) or ('free-to-play' in ftplay_text)
+                        if has_f2p_cues:
+                            assumed = {'types': ['In-App Purchases'], 'notes': 'Defaulted from Free-to-Play cues; MTX typical, fairness assumed.'}
+                            fair = classify_monetisation(assumed)
+                            score_dict.setdefault('reasoning', {})['monetisation'] = {
+                                'short': 'Monetisation (assumed from F2P)',
+                                'detailed': {
+                                    'types': assumed['types'],
+                                    'notes': assumed['notes'],
+                                    'fairness_label': fair.get('label'),
+                                    'fairness_color': fair.get('color'),
+                                    'fairness_source': 'assumed-f2p',
+                                    'confidence': 0.45
+                                }
+                            }
+                        else:
+                            assumed = {'types': [], 'notes': 'No monetisation signals detected from public info; treated as none until proven otherwise.'}
+                            fair = classify_monetisation(assumed)
+                            score_dict.setdefault('reasoning', {})['monetisation'] = {
+                                'short': 'Monetisation (no signals found)',
+                                'detailed': {
+                                    'types': assumed['types'],
+                                    'notes': assumed['notes'],
+                                    'fairness_label': fair.get('label'),
+                                    'fairness_color': fair.get('color'),
+                                    'fairness_source': 'assumed-default',
+                                    'confidence': 0.35
+                                }
+                            }
+                    # Persist update back to DB so subsequent reads are consistent
+                    conn.execute("UPDATE scores SET reasoning = ?, updated_at = CURRENT_TIMESTAMP WHERE game_id = ?", (json.dumps(score_dict['reasoning']), game_id))
+                    conn.commit()
+            except Exception as _e:
+                pass
             result = GameWithScores(game=result, scores=ScoreMetrics(**score_dict))
 
         return result
@@ -1933,6 +2481,36 @@ class ManualReleaseDateRequest(BaseModel):
     release_date: str  # YYYY-MM-DD
     source: Optional[str] = 'manual'
     notes: Optional[str] = None  # e.g., "added by AI; verified from official announcement"
+
+class ToneRewriteRequest(BaseModel):
+    text: str
+    tone: Optional[str] = 'casual'  # 'casual' | 'meme' | 'streamer' | 'discord'
+    # Optional context so we can avoid wrong genre language and be specific
+    game_title: Optional[str] = None
+    genres: Optional[List[str]] = None
+    subscores: Optional[dict] = None  # e.g., {'core_gameplay': {'mechanics_controls': 78, 'balance': 62, 'replayability': 70}, ...}
+
+class ToneRewriteResponse(BaseModel):
+    text: str
+    used_model: Optional[str] = None
+    provider: str = 'anthropic'
+
+class ToneRewriteBatchItem(BaseModel):
+    key: str
+    text: str
+
+class ToneRewriteBatchRequest(BaseModel):
+    tone: Optional[str] = 'casual'
+    items: List[ToneRewriteBatchItem]
+    # Optional context
+    game_title: Optional[str] = None
+    genres: Optional[List[str]] = None
+    subscores: Optional[dict] = None
+
+class ToneRewriteBatchResponse(BaseModel):
+    items: List[ToneRewriteBatchItem]
+    used_model: Optional[str] = None
+    provider: str = 'anthropic'
 
 @app.post('/api/games/{game_id}/overrides')
 async def set_overrides(game_id: int, body: ScoreOverrideRequest):
@@ -2033,6 +2611,770 @@ async def get_life_support(game_id: int):
             'notes': row['notes'],
             'updated_at': row['updated_at']
         }}
+
+# =============================== Text Rewrite (Claude 3.5 Sonnet) ===============================
+
+# Tone description constants (keep brutal wording fixed)
+BRUTAL_TONE_STYLE = 'brutally honest, candid, no fluff'
+
+def _to_uk_english(s: str) -> str:
+    """Convert common US spellings to UK spellings (lightweight mapping)."""
+    try:
+        import re as _re
+        # Map of US -> UK spellings (lowercase keys)
+        mapping = {
+            'color': 'colour', 'colors': 'colours', 'colored': 'coloured', 'coloring': 'colouring',
+            'optimize': 'optimise', 'optimized': 'optimised', 'optimizing': 'optimising', 'optimization': 'optimisation',
+            'behavior': 'behaviour', 'behavioral': 'behavioural',
+            'center': 'centre', 'centered': 'centred', 'centering': 'centring',
+            'favorite': 'favourite', 'favorites': 'favourites',
+            'armor': 'armour',
+            'analyze': 'analyse', 'analyzed': 'analysed', 'analyzing': 'analysing', 'analyzer': 'analyser',
+            'defense': 'defence'
+        }
+        def sub_word(text: str, src: str, tgt: str) -> str:
+            return _re.sub(rf"\b{_re.escape(src)}\b", tgt, text, flags=_re.IGNORECASE)
+        out = s
+        for us, uk in mapping.items():
+            out = sub_word(out, us, uk)
+        return out
+    except Exception:
+        return s
+
+def _fallback_spicy_rewrite(text: str, tone: str = 'casual', topic_hint: str | None = None, subscores: dict | None = None, genres: list[str] | None = None) -> str:
+    """Generate a playful, gamer-style rewrite locally when Claude isn't available.
+    Keeps it short (1–2 sentences), uses light slang, and tailors to the detected metric.
+    """
+    try:
+        t = (tone or 'casual').lower()
+        raw = (text or '').strip()
+        lower = raw.lower()
+
+        # Seed randomness for variety but stable per input
+        try:
+            seed_src = f"{tone}::{topic_hint or ''}::{raw[:120]}"
+            rnd = random.Random(hash(seed_src))
+        except Exception:
+            rnd = random
+
+        # Extract a numeric score out of 100 if present
+        score = None
+        try:
+            import re as _re
+            m = _re.search(r"(\d{1,3}(?:\.\d+)?)\s*/\s*100", raw)
+            if m:
+                score = float(m.group(1))
+        except Exception:
+            score = None
+
+        # Choose adjectives by score band (creative but non-promotional)
+        if score is not None:
+            if score >= 90:
+                adj = rnd.choice(["polished", "well‑tuned", "sharp", "dialled‑in", "cohesive", "confident"])
+            elif score >= 80:
+                adj = rnd.choice(["clean", "crisp", "buttery", "snappy", "tight", "punchy"])
+            elif score >= 70:
+                adj = rnd.choice(["holds its own", "steady", "puts in work", "tight enough", "finds a groove"]) 
+            elif score >= 60:
+                adj = rnd.choice(["workmanlike", "kinda mid but playable", "serviceable", "rough‑polished", "could use a tune"]) 
+            else:
+                adj = rnd.choice(["rough", "struggling", "needs training arc", "mid at best", "on life support"]) 
+        else:
+            adj = rnd.choice(["clean", "silky", "snappy", "low‑key", "zesty"]) 
+
+        # Detect metric/topic hints
+        topic = None
+        hint = (topic_hint or '').lower()
+        candidates = [lower, hint]
+        for pool in candidates:
+            for key, tag in [
+                ("core_gameplay", "Core Gameplay"),
+                ("gameplay", "Gameplay"),
+                ("mechanic", "Mechanics"),
+                ("technical_performance", "Performance"),
+                ("performance", "Performance"),
+                ("technical", "Performance"),
+                ("story_immersion", "Story"),
+                ("story", "Story"),
+                ("immersion", "Immersion"),
+                ("presentation", "Presentation"),
+                ("graphic", "Graphics"),
+                ("innovation_creativity", "Innovation"),
+                ("innovation", "Innovation"),
+                ("community_longevity", "Community"),
+                ("community", "Community"),
+                ("monetisation", "Monetisation"),
+                ("monetization", "Monetisation"),
+            ]:
+                if key in pool:
+                    topic = tag
+                    break
+            if topic:
+                break
+
+        # Domain hints (e.g., sports) to avoid combat wording on non-combat titles
+        sports_tokens = [
+            'sports', 'football', 'soccer', 'fc', 'fifa', 'madden', 'nhl', 'nba', 'eas fc', 'ea sports fc'
+        ]
+        genres_lower = [g.lower() for g in (genres or []) if isinstance(g, str)]
+        is_sports = any(tok in lower for tok in sports_tokens) or any(tok in hint for tok in sports_tokens) or any('sport' in g for g in genres_lower)
+        # Broader genre tokens for light context
+        genre_tokens = set()
+        for g in genres_lower:
+            for t in re.split(r"[^a-z0-9]+", g):
+                if t:
+                    genre_tokens.add(t)
+        # Helper: genre-aware context phrase per topic (single short sentence fragment)
+        def context_vibe(topic_key: str) -> str | None:
+            if is_sports:
+                if topic_key in ('gameplay','mechanics'):
+                    return "Passing, finishing, and defence shape the match."
+                if topic_key == 'presentation':
+                    return "Broadcast package and stadium feel do the heavy lifting."
+                if topic_key in ('story','immersion'):
+                    return "Career beats and broadcast cadence set the tone."
+                if topic_key == 'performance':
+                    return "Large crowds, replays, and camera cuts test stability."
+            if 'shooter' in genre_tokens or 'fps' in genre_tokens:
+                if topic_key in ('gameplay','mechanics'):
+                    return "Gunfeel and recoil tell the story."
+                if topic_key == 'presentation':
+                    return "Impact readability and effects matter more than raw pixels."
+                if topic_key == 'performance':
+                    return "Busy fights and particles stress frames."
+            if 'rpg' in genre_tokens or 'role' in genre_tokens:
+                if topic_key in ('gameplay','mechanics'):
+                    return "Builds, skills, and quest flow carry the experience."
+                if topic_key in ('story','immersion'):
+                    return "Companions, questlines, and world lore do the lifting."
+            if 'platformer' in genre_tokens:
+                if topic_key in ('gameplay','mechanics'):
+                    return "Jumps, timing, and precision are the read."
+            if 'racing' in genre_tokens or 'racer' in genre_tokens:
+                if topic_key in ('gameplay','mechanics'):
+                    return "Handling, braking, and cornering are the feel."
+                if topic_key == 'presentation':
+                    return "Sense of speed and camera work sell the laps."
+            if 'fighting' in genre_tokens:
+                if topic_key in ('gameplay','mechanics'):
+                    return "Hit confirm windows, cancels, and matchup knowledge matter."
+            if 'strategy' in genre_tokens:
+                if topic_key in ('gameplay','mechanics'):
+                    return "Macro calls and micro execution define the loop."
+            if 'simulation' in genre_tokens or 'sim' in genre_tokens:
+                if topic_key in ('gameplay','mechanics'):
+                    return "Systems and feedback loops are the focus."
+            if 'horror' in genre_tokens:
+                if topic_key in ('story','immersion'):
+                    return "Tension, audio cues, and resource pressure set the mood."
+                if topic_key == 'performance':
+                    return "Dark scenes and post-processing can tax frames."
+            if 'roguelike' in genre_tokens or 'roguelite' in genre_tokens:
+                if topic_key in ('gameplay','mechanics'):
+                    return "Runs, meta progression, and build variety keep it moving."
+            if 'soulslike' in genre_tokens:
+                if topic_key in ('gameplay','mechanics'):
+                    return "I-frames, stamina, and punish windows are the skill check."
+            if 'metroidvania' in genre_tokens:
+                if topic_key in ('gameplay','mechanics'):
+                    return "Movement, upgrades, and route-finding do the work."
+            if 'puzzle' in genre_tokens:
+                if topic_key in ('gameplay','mechanics'):
+                    return "Clarity of rules and the 'aha' moments drive the loop."
+            return None
+
+        # Tone flourishes
+        def flavor_casual():
+            openers = [
+                "Okay so",
+                "Honestly",
+                "Real talk",
+                "Low-key",
+                "Not gonna lie",
+                "Hear me out",
+            ]
+            closers = [
+                "no spin.",
+                "as it is.",
+                "that’s the read.",
+                "nothing more, nothing less.",
+                "just observations.",
+                "no pitch.",
+            ]
+            return rnd.choice(openers), rnd.choice(closers)
+
+        def flavor_meme():
+            openers = [
+                "No cap,",
+                "POV:",
+                "Certified hood classic:",
+                "This goes dummy:",
+                "Skill issue? Not here:",
+                "Breaking:",
+            ]
+            closers = [
+                "that’s the read.",
+                "no spin.",
+                "just how it plays.",
+                "call it neutral.",
+                "not a sales pitch.",
+                "observational vibes only.",
+            ]
+            return rnd.choice(openers), rnd.choice(closers)
+
+        def flavor_streamer():
+            openers = [
+                "Chat, listen—",
+                "Yo stream,",
+                "Okay team,",
+                "Clip this—",
+                "Mods,",
+                "Production,",
+            ]
+            closers = [
+                "that's the content.",
+                "and we're cooking.",
+                "mic drop.",
+                "we gaming.",
+                "print it.",
+                "that's the tweet.",
+            ]
+            return rnd.choice(openers), rnd.choice(closers)
+
+        def flavor_discord():
+            openers = [
+                "Heads up:",
+                "ngl,",
+                "hot take:",
+                "FYI",
+                "pls read:",
+                "tldr:",
+            ]
+            closers = [
+                "thoughts? 🤔",
+                "pls discuss.",
+                "opinions welcome.",
+                "that’s all.",
+                "not prescriptive.",
+                "no pitch.",
+                "observations only.",
+            ]
+            return rnd.choice(openers), rnd.choice(closers)
+
+        def flavor_brutal():
+            # No fluff, straight to point. Keep it UK English and inclusive, but candid.
+            openers = [
+                "Blunt take:",
+                "Straight up:",
+                "No fluff:",
+                "Honestly:",
+                "Cutting to it:",
+            ]
+            closers = [
+                "that’s the reality.",
+                "no sugar-coat.",
+                "call it as seen.",
+                "facts over vibes.",
+                "that’s the read.",
+            ]
+            return rnd.choice(openers), rnd.choice(closers)
+
+        if t == 'meme':
+            opener, closer = flavor_meme()
+        elif t == 'streamer':
+            opener, closer = flavor_streamer()
+        elif t == 'discord':
+            opener, closer = flavor_discord()
+        elif t == 'brutal':
+            opener, closer = flavor_brutal()
+        else:
+            opener, closer = flavor_casual()
+
+        # Build two compact sentences using topic-aware templates
+        left = (topic or "Gameplay").lower()
+        perf_hint = ("performance" in left) or ("technical" in left) or ("fps" in lower) or ("stutter" in lower)
+
+        def pick(options):
+            return rnd.choice(options)
+
+        # Topic-specific lines (default creative pools; will be overridden by subscores if provided)
+        topic_lines = {
+            'gameplay': (
+                [
+                    (
+                        f"{opener} on-pitch play is {adj}, {closer}" if is_sports else
+                        f"{opener} the gameplay is {adj}, {closer}"
+                    ),
+                    (
+                        f"passing feels {pick(['crisp','snappy','buttery'])} and movement reads your intent." if is_sports else
+                        f"inputs feel {pick(['tight','snappy','buttery'])} and timing rewards you."
+                    ),
+                ],
+                [
+                    ("build-up play finds space if you work for it." if is_sports else "the loop sinks its hooks fast."),
+                    ("finishing feels earned when you line it up." if is_sports else "reads and reactions actually matter."),
+                    ("defence positioning matters—patterns open then close." if is_sports else "skill checks feel fair."),
+                    ("set-pieces are a little mini-game of their own." if is_sports else "reads and reactions actually matter."),
+                ]
+            ),
+            'mechanics': (
+                [
+                    f"{opener} the mechanics are {adj}, {closer}",
+                    (
+                        "systems balance pace, positioning, and stamina nicely." if is_sports else
+                        "systems click together like Lego for gremlins (that's us)."
+                    ),
+                ],
+                [
+                    ("through balls vs safe passes is a live decision every play." if is_sports else "risk-reward is tuned just right."),
+                    ("first touch matters; bad control will punish you." if is_sports else "inputs translate straight to dopamine."),
+                    ("formations and tactics actually show up on the pitch." if is_sports else "skill ceiling peeks through quick."),
+                ]
+            ),
+            'performance': (
+                [
+                    f"{opener} the performance needs a buff, {closer}",
+                    f"thermals are cooking and frames sometimes faceplant.",
+                ],
+                [
+                    "shader cache is playing Tetris on first launch.",
+                    "fans spin up like a jet mid-boss.",
+                    "frametime graph looks like a heartbeat monitor.",
+                    "a hotfix could change the story overnight.",
+                ]
+            ),
+            'story': (
+                [
+                    f"{opener} the story delivery is {adj}, {closer}",
+                    "dialogue lands and the stakes escalate cleanly.",
+                ],
+                [
+                    "lore actually cooks instead of dumping walls of text.",
+                    "setpieces carry weight without dragging.",
+                    "character arcs get room to breathe.",
+                    "quests respect your time (mostly).",
+                ]
+            ),
+            'immersion': (
+                [
+                    f"{opener} immersion is {adj}, {closer}",
+                    "it nails that 'one more run' hypnosis.",
+                ],
+                [
+                    ("crowd noise and broadcast chatter sell the stadium vibe." if is_sports else "sound cues and haptics sell the fantasy."),
+                    "worldbuilding feels lived-in, not copy-paste.",
+                    "pace rarely hiccups once it clicks.",
+                    "UI stays out of the way when it should.",
+                ]
+            ),
+            'presentation': (
+                [
+                    (
+                        f"{opener} broadcast package looks {adj}, {closer}" if is_sports else f"{opener} graphics are {adj}, {closer}"
+                    ),
+                    (
+                        "stadium atmosphere pops on key moments." if is_sports else "art direction drips and lighting sings."
+                    ),
+                ],
+                [
+                    ("although commentary cadence still misses a beat." if is_sports else "although the soundtrack slaps in key moments."),
+                    "but the soundtrack absolutely carries key beats.",
+                    "meanwhile the audio mix does numbers when it matters.",
+                    "VFX do the heavy lifting without blinding you.",
+                    "UI is readable without screaming.",
+                    "camera work rarely fights the action.",
+                ]
+            ),
+            'graphics': (
+                [
+                    f"{opener} the visuals are {adj}, {closer}",
+                    "materials and particles show up to flex.",
+                ],
+                [
+                    "stylistic choices age better than raw pixels.",
+                    "color grading sets a vibe instantly.",
+                    "animation sells weight and impact.",
+                    "post-processing is tasteful (mostly).",
+                ]
+            ),
+            'innovation': (
+                [
+                    f"{opener} the ideas go {adj}, {closer}",
+                    "systems interlock in clever ways.",
+                ],
+                [
+                    "genre remix feels fresh without trying too hard.",
+                    "you can smell the 'just one more experiment' energy.",
+                    "it finds new lines to color outside.",
+                    "a couple swings miss, but the hits land loud.",
+                ]
+            ),
+            'community': (
+                [
+                    f"{opener} the community scene is {adj}, {closer}",
+                    "lobbies feel alive and the meta keeps moving.",
+                ],
+                [
+                    "queues are quick and salt stays mostly in the shaker.",
+                    "modders already cooking side dishes.",
+                    "events give reasons to log back in.",
+                    "dev posts don't ghost for months.",
+                ]
+            ),
+        }
+
+        # Map topic tag to template key
+        topic_key = 'gameplay'
+        if perf_hint:
+            topic_key = 'performance'
+        elif topic:
+            map_to = {
+                'Core Gameplay': 'gameplay',
+                'Gameplay': 'gameplay',
+                'Mechanics': 'mechanics',
+                'Performance': 'performance',
+                'Story': 'story',
+                'Immersion': 'immersion',
+                'Presentation': 'presentation',
+                'Graphics': 'graphics',
+                'Innovation': 'innovation',
+                'Community': 'community',
+                'Monetisation': 'monetisation',
+            }
+            topic_key = map_to.get(topic, 'gameplay')
+
+        # Special handling for monetisation to talk menus and fairness explicitly
+        if topic_key == 'monetisation':
+            # crude signal detection from provided text
+            has_p2w = any(k in lower for k in ["p2w: yes", "pay to win", "pay-to-win", "gameplay advantage", "stat boost", "xp boost", "xp advantage", "power boost"]) or ("p2w" in lower and "no" not in lower)
+            cosmetic_only = any(k in lower for k in ["cosmetic", "p2w: no", "no p2w", "no pay to win", "no microtransaction", "no mtx", "perfect"]) and not has_p2w
+            mixed = ("p2w: mixed" in lower) or (any(k in lower for k in ["battle pass", "item shop", "loot box", "gacha"])) and not has_p2w and not cosmetic_only
+
+            if has_p2w:
+                s1 = pick([
+                    f"{opener} pay-to-win elements are present—calling it plainly, {closer}",
+                    f"{opener} monetisation crosses into pay-to-win, {closer}",
+                ])
+                s2 = pick([
+                    "spend buys a competitive edge; skill isn’t the only factor.",
+                    "progress and power lean on your wallet more than skill.",
+                    "credit card pressure shows up in competitive modes.",
+                ])
+            elif cosmetic_only:
+                s1 = pick([
+                    f"{opener} it's mostly cosmetic bits—fair play, {closer}",
+                    f"{opener} monetisation stays in its lane, {closer}",
+                ])
+                # Default to this exact line for cosmetic-only/no-P2W cases
+                s2 = "no gameplay edge—just drip if you’re into it."
+            elif mixed:
+                s1 = pick([
+                    f"{opener} monetisation gives you a nudge, {closer}",
+                    f"{opener} the shop is present but not overbearing, {closer}",
+                ])
+                s2 = pick([
+                    "menus prod you now and then; fairness reads decent.",
+                    "upsell appears but stays optional.",
+                    "not egregious—pop-ups are present.",
+                ])
+            else:
+                s1 = pick([
+                    f"{opener} monetisation exists, {closer}",
+                    f"{opener} there's a shop, {closer}",
+                ])
+                s2 = pick([
+                    "hard to judge fairness from here—check before you buy.",
+                    "can't rate fairness without more info.",
+                    "unclear on advantage—treat as 'unknown' for now.",
+                ])
+        else:
+            # If subscores provided, build a metric-aligned summary instead of generic flavour (no numbers; qualitative only)
+            built = False
+            def band(v):
+                try:
+                    f = float(v)
+                except Exception:
+                    return None
+                if f >= 80: return 'high'
+                if f >= 60: return 'mid'
+                return 'low'
+            def choose(desc_map, v):
+                b = band(v)
+                if b is None: return None
+                return desc_map.get(b)
+            if isinstance(subscores, dict):
+                # Gameplay/mechanics
+                if topic_key in ('gameplay','mechanics'):
+                    cg = subscores.get('core_gameplay') or {}
+                    mc_d = choose({'high': 'tight and responsive','mid': 'serviceable with a few quirks','low': 'a bit slippy and inconsistent'}, cg.get('mechanics_controls'))
+                    bal_d = choose({'high': 'feels fair','mid': 'mostly fair with swingy moments','low': 'needs tuning'}, cg.get('balance'))
+                    rep_d = choose({'high': 'keeps you coming back','mid': 'has a decent loop','low': 'runs thin after a while'}, cg.get('replayability'))
+                    frags = []
+                    if mc_d: frags.append(f"controls feel {mc_d}")
+                    if bal_d: frags.append(f"balance {bal_d}")
+                    if rep_d: frags.append(f"replayability {rep_d}")
+                    if frags:
+                        s1 = f"{opener} the core loop clicks: " + ", ".join(frags) + f". {closer}"
+                        s2 = context_vibe(topic_key) or "Net: strengths and gaps are clear without fluff."
+                        built = True
+                # Performance
+                if not built and topic_key == 'performance':
+                    tp = subscores.get('technical_performance') or {}
+                    fs_d = choose({'high': 'frames hold steady','mid': 'mostly smooth with the odd dip','low': 'choppy in spots'}, tp.get('frame_stability'))
+                    sr_d = choose({'high': 'stable build with few hiccups','mid': 'some quirks here and there','low': 'crashes or bugs show up'}, tp.get('stability_reliability'))
+                    op_d = choose({'high': 'well-optimised across the board','mid': 'fine on modern kit','low': 'needs optimisation work'}, tp.get('optimisation'))
+                    frags = [p for p in [fs_d, sr_d, op_d] if p]
+                    if frags:
+                        s1 = f"{opener} performance vibe: " + "; ".join(frags) + f". {closer}"
+                        s2 = context_vibe(topic_key) or "Stutter can show; settings tweaks may help."
+                        built = True
+                # Presentation
+                if not built and topic_key == 'presentation':
+                    pr = subscores.get('presentation') or {}
+                    ga_d = choose({'high': 'art direction pops','mid': 'clean look with some highlights','low': 'flat in places'}, pr.get('graphics_art'))
+                    sm_d = choose({'high': 'soundtrack hums and the mix lands','mid': 'good mix overall','low': 'forgettable audio mix'}, pr.get('sound_music'))
+                    im_d = choose({'high': 'easy to lose yourself','mid': 'absorbing enough','low': 'struggles to pull you in'}, pr.get('immersion_factor'))
+                    frags = [p for p in [ga_d, sm_d, im_d] if p]
+                    if frags:
+                        s1 = f"{opener} presentation lands: " + "; ".join(frags) + f". {closer}"
+                        s2 = context_vibe(topic_key) or "Audio/visuals pull their weight where it counts."
+                        built = True
+                # Story & immersion
+                if not built and topic_key in ('story','immersion'):
+                    si = subscores.get('story_immersion') or {}
+                    nv_d = choose({'high': 'story lands and sticks the beats','mid': 'story holds together','low': 'story runs thin'}, si.get('narrative_quality'))
+                    wb_d = choose({'high': 'the world feels lived-in','mid': 'the world has shape and texture','low': 'the world feels sparse'}, si.get('worldbuilding'))
+                    cd_d = choose({'high': 'characters get meaningful arcs','mid': 'decent character moments','low': 'thin character work'}, si.get('character_development'))
+                    frags = [p for p in [nv_d, wb_d, cd_d] if p]
+                    if frags:
+                        s1 = f"{opener} story & immersion: " + "; ".join(frags) + f". {closer}"
+                        s2 = context_vibe(topic_key) or "Expect delivery in line with that mix."
+                        built = True
+            if not built:
+                first_lines, second_pool = topic_lines.get(topic_key, topic_lines['gameplay'])
+                s1 = pick(first_lines)
+                # Swap in a genre-aware context line if available
+                s2 = context_vibe(topic_key) or pick(second_pool)
+
+        out = f"{s1} {s2}"
+        # Trim extra spaces just in case
+        out = ' '.join(out.split())
+        return _to_uk_english(out)
+    except Exception:
+        # Ultra-safe fallback if anything goes wrong here
+        return f"{text}"
+
+@app.post('/api/text/rewrite', response_model=ToneRewriteResponse)
+async def rewrite_text_claude(body: ToneRewriteRequest):
+    """Rewrite input text in a gamer-friendly tone via Anthropic Claude 3.5 Sonnet.
+
+    Requires ANTHROPIC_API_KEY in environment. If absent, falls back to a simple local rephrase.
+    """
+    toneStyles = {
+        'casual': 'casual gamer vibes',
+        'meme': 'high meme energy',
+        'streamer': 'streamer commentary style',
+        'discord': 'Discord chat energy with emojis',
+        'brutal': BRUTAL_TONE_STYLE
+    }
+    tone = (body.tone or 'casual').lower()
+    tone_desc = toneStyles.get(tone, toneStyles['casual'])
+    if not body.text or not isinstance(body.text, str):
+        raise HTTPException(status_code=400, detail='text is required')
+
+    # Fallback when no Anthropic key is configured
+    if not ANTHROPIC_API_KEY:
+        # Pass a light topic hint based on common metric keys in the text
+        hint = None
+        low = body.text.lower()
+        for k in ["core_gameplay","gameplay","mechanics","performance","technical","story","immersion","presentation","graphics","innovation","community"]:
+            if k in low:
+                hint = k
+                break
+        # Enrich hint with sports cue if title/genres indicate sports
+        try:
+            sports_cues = ['sports','football','soccer','fc','fifa','madden','nhl','nba']
+            gt = (body.game_title or '').lower()
+            gs = ' '.join((body.genres or [])).lower()
+            if any(x in gt for x in sports_cues) or any(x in gs for x in sports_cues):
+                hint = (hint + ' sports') if hint else 'sports'
+        except Exception:
+            pass
+        return ToneRewriteResponse(text=_fallback_spicy_rewrite(body.text, tone, hint, subscores=body.subscores, genres=body.genres), used_model=None, provider='fallback')
+
+    try:
+        api_url = 'https://api.anthropic.com/v1/messages'
+        headers = {
+            'x-api-key': ANTHROPIC_API_KEY,
+            'anthropic-version': '2023-06-01',
+            'content-type': 'application/json'
+        }
+        system_prompt = (
+            "Rewrite text to be fun, playful, and gamer-friendly in 1-2 punchy sentences. "
+            "Be specific and evocative; avoid generic words like 'nice', 'good', 'great', 'solid'. "
+            "Use UK English spelling. Use light gaming slang, avoid profanity, stay inclusive. "
+            "For monetisation topics: be candid and factual—if pay-to-win (P2W) or spend-for-advantage exists, say it plainly; "
+            "if fairness is unknown, state it's unknown; do not downplay upsell/menu pressure. "
+            "If the topic is monetisation, do not talk about gameplay loops, mechanics, balance, or replayability; focus strictly on shop/MTX, fairness, and menu pressure. "
+            "If monetisation is cosmetic-only/no P2W, a good phrasing is: 'no gameplay edge—just drip if you’re into it.' "
+            "If the context is a sports title (e.g., EA Sports FC/FIFA/Madden/NHL/NBA), avoid combat/boss language; focus on on-pitch play, passing, finishing, defence, stamina. "
+            "If subscores are provided, briefly align the phrasing with those metrics (e.g., mechanics & controls, balance, replayability) using qualitative language only (no numbers), and avoid irrelevant terms like 'pacing' where it doesn't fit. "
+            "No prefaces like 'Quick take'. "
+            f"Style: {tone_desc}."
+        )
+        payload = {
+            'model': ANTHROPIC_MODEL,
+            'max_tokens': 400,
+            'system': system_prompt,
+            'messages': [
+                {
+                    'role': 'user',
+                    'content': [
+                        {'type': 'text', 'text': f"Rewrite the following: \n\n{body.text}\n\nContext (optional): title={body.game_title or ''}; genres={(body.genres or [])}; subscores={(json.dumps(body.subscores) if body.subscores else '{}')}"}
+                    ]
+                }
+            ]
+        }
+        resp = requests.post(api_url, headers=headers, json=payload, timeout=20)
+        resp.raise_for_status()
+        data = resp.json()
+        out = ''
+        try:
+            parts = data.get('content') or []
+            for p in parts:
+                if isinstance(p, dict) and p.get('type') == 'text' and isinstance(p.get('text'), str):
+                    out += p['text']
+        except Exception:
+            out = ''
+        if not out:
+            out = data.get('content', '') if isinstance(data.get('content'), str) else ''
+        if not out:
+            out = 'Could not parse Claude response; please try again.'
+        # Enforce monetisation on-topic: if the input text looks like monetisation, override with strict fallback
+        low_in = (body.text or '').lower()
+        if ('monetisation' in low_in) or ('monetization' in low_in) or ('p2w' in low_in):
+            out = _fallback_spicy_rewrite(body.text, tone, 'monetisation', subscores=None, genres=body.genres)
+        return ToneRewriteResponse(text=out.strip(), used_model=ANTHROPIC_MODEL, provider='anthropic')
+    except Exception as e:
+        print(f"Anthropic rewrite error: {e}")
+    return ToneRewriteResponse(text=_fallback_spicy_rewrite(body.text, tone, subscores=body.subscores, genres=body.genres), used_model=None, provider='fallback')
+
+
+@app.post('/api/text/rewrite-batch', response_model=ToneRewriteBatchResponse)
+async def rewrite_text_batch(body: ToneRewriteBatchRequest):
+    toneStyles = {
+        'casual': 'casual gamer vibes',
+        'meme': 'high meme energy',
+        'streamer': 'streamer commentary style',
+        'discord': 'Discord chat energy with emojis',
+        'brutal': BRUTAL_TONE_STYLE
+    }
+    if not body.items or not isinstance(body.items, list):
+        raise HTTPException(status_code=400, detail='items is required')
+    tone = (body.tone or 'casual').lower()
+    tone_desc = toneStyles.get(tone, toneStyles['casual'])
+
+    # Fallback: generate spicy rewrites per item
+    if not ANTHROPIC_API_KEY:
+        out_items = []
+        for i in body.items:
+            hint = i.key.lower() if isinstance(i.key, str) else None
+            # If this is a monetisation field, force topic to 'monetisation' and ignore subscores
+            is_monetisation = isinstance(i.key, str) and 'monetisation' in i.key.lower()
+            # Add sports hint if context provided
+            try:
+                sports_cues = ['sports','football','soccer','fc','fifa','madden','nhl','nba']
+                gt = (body.game_title or '').lower()
+                gs = ' '.join((body.genres or [])).lower()
+                if any(x in gt for x in sports_cues) or any(x in gs for x in sports_cues):
+                    hint = f"{hint or ''} sports".strip()
+            except Exception:
+                pass
+            out_items.append(
+                ToneRewriteBatchItem(
+                    key=i.key,
+                    text=_fallback_spicy_rewrite(
+                        i.text,
+                        tone,
+                        ('monetisation' if is_monetisation else hint),
+                        subscores=(None if is_monetisation else body.subscores),
+                        genres=body.genres
+                    )
+                )
+            )
+        return ToneRewriteBatchResponse(items=out_items, provider='fallback', used_model=None)
+
+    # Anthropic call: join items into a single prompt to reduce requests
+    try:
+        api_url = 'https://api.anthropic.com/v1/messages'
+        headers = {
+            'x-api-key': ANTHROPIC_API_KEY,
+            'anthropic-version': '2023-06-01',
+            'content-type': 'application/json'
+        }
+        system_prompt = (
+            "Rewrite each value to be fun, playful, and gamer-friendly in 1-2 punchy sentences. "
+            "Be specific and evocative (e.g., talk mechanics vs performance), avoid generic fillers (nice/good/great/solid). "
+            "Use UK English spelling. Use light gaming slang, inclusive tone, no profanity. "
+            "For monetisation keys/fields: be candid—if P2W or spend-for-advantage exists, say it plainly; if unknown, say 'unknown'. "
+            "For keys named 'monetisation.*', do not talk about gameplay loops, mechanics, balance, or replayability; focus strictly on shop/MTX, fairness, and menu pressure. "
+            "If monetisation is cosmetic-only/no P2W, prefer: 'no gameplay edge—just drip if you’re into it.' "
+            "Avoid combat/boss terminology for sports titles (EA Sports FC/FIFA/Madden/NHL/NBA); focus on on-pitch play and broadcast vibe. "
+            "If subscores are provided, align phrasing with those values using qualitative descriptions (no numeric mentions), and avoid irrelevant terms like 'pacing' where it doesn't fit. "
+            f"Style: {tone_desc}. Return strict JSON mapping keys to rewrites."
+        )
+        payload_text = {
+            k: v for k, v in ((i.key, i.text) for i in body.items if isinstance(i.key, str) and isinstance(i.text, str))
+        }
+        ctx_title = body.game_title or ''
+        ctx_genres = ', '.join(body.genres or [])
+        user_text = (
+            "Rewrite each field in this JSON and return JSON with the same keys only, values replaced with rewrites.\n\n" +
+            json.dumps(payload_text) +
+            f"\n\nContext (optional): title={ctx_title}; genres=[{ctx_genres}]; subscores={(json.dumps(body.subscores) if body.subscores else '{}')}"
+        )
+        payload = {
+            'model': ANTHROPIC_MODEL,
+            'max_tokens': 1200,
+            'system': system_prompt,
+            'messages': [
+                { 'role': 'user', 'content': [ { 'type': 'text', 'text': user_text } ] }
+            ]
+        }
+        resp = requests.post(api_url, headers=headers, json=payload, timeout=25)
+        resp.raise_for_status()
+        data = resp.json()
+        # Attempt to parse JSON from Claude response
+        content_text = ''
+        try:
+            parts = data.get('content') or []
+            for p in parts:
+                if isinstance(p, dict) and p.get('type') == 'text' and isinstance(p.get('text'), str):
+                    content_text += p['text']
+        except Exception:
+            content_text = ''
+        mapping = {}
+        try:
+            mapping = json.loads(content_text)
+        except Exception:
+            # Fallback to returning inputs unchanged
+            mapping = payload_text
+        # Enforce monetisation keys to use strict fallback (LLM output can drift into gameplay)
+        enforced_items = {}
+        for k in payload_text.keys():
+            v = str(mapping.get(k, payload_text.get(k, '')))
+            if isinstance(k, str) and 'monetisation' in k.lower():
+                v = _fallback_spicy_rewrite(payload_text.get(k, v), tone, 'monetisation', subscores=None, genres=body.genres)
+            enforced_items[k] = v
+        out_items = [ToneRewriteBatchItem(key=k, text=enforced_items[k]) for k in payload_text.keys()]
+        return ToneRewriteBatchResponse(items=out_items, used_model=ANTHROPIC_MODEL, provider='anthropic')
+    except Exception as e:
+        print(f"Anthropic batch rewrite error: {e}")
+        out_items = []
+        for i in body.items:
+            hint = i.key.lower() if isinstance(i.key, str) else None
+            out_items.append(ToneRewriteBatchItem(key=i.key, text=_fallback_spicy_rewrite(i.text, tone, hint, subscores=body.subscores, genres=body.genres)))
+        return ToneRewriteBatchResponse(items=out_items, provider='fallback', used_model=None)
 
 # ---------------- Admin: reset legacy and rescan ----------------
 

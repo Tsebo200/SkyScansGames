@@ -1,0 +1,16 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "run-frontend-tests",
+			"type": "shell",
+			"command": "npm test -- --watchAll=false",
+			"group": "test"
+		},
+		{
+			"label": "Run Frontend Tests",
+			"type": "shell",
+			"command": "npm test --silent -- --watchAll=false"
+		}
+	]
+}
