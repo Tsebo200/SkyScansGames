@@ -249,13 +249,13 @@ const ScoreDashboard = React.memo(({ scores, game, externalOpenPreview = 0, onPr
   }, [rawgDescEffective, descExpanded]);
 
   
-  // Details URL (for QR)
+  // Details URL (for QR) - now points to specific game's JSON data
   const detailsUrl = useMemo(() => {
     try {
-      const origin = window?.location?.origin || '';
-      return `${origin}/api/games/${game.id}`;
+      // Point to the specific game's JSON data endpoint
+      return `http://localhost:8000/api/games/${game.id}`;
     } catch {
-      return `/api/games/${game.id}`;
+      return `http://localhost:8000/api/games/${game.id}`;
     }
   }, [game.id]);
 
@@ -897,9 +897,9 @@ const ScoreDashboard = React.memo(({ scores, game, externalOpenPreview = 0, onPr
                     </div>
                     {/* Increase margin and gap for the QR/details row */}
                     <div style={{ marginTop: 16, display: 'grid', gridTemplateColumns: 'auto 1fr', alignItems: 'center', gap: 18 }}>
-                      <img src={`https://api.qrserver.com/v1/create-qr-code/?size=160x160&data=${encodeURIComponent(detailsUrl)}`} alt="QR code to game details" style={{ width: 120, height: 120, borderRadius: 8, border: '1px solid #e5e7eb' }} />
+                      <img src={`https://api.qrserver.com/v1/create-qr-code/?size=160x160&data=${encodeURIComponent(detailsUrl)}`} alt="QR code to game JSON data" style={{ width: 120, height: 120, borderRadius: 8, border: '1px solid #e5e7eb' }} />
                       <div style={{ fontSize: '0.9rem', color: '#374151' }}>
-                        <div style={{ fontWeight: 600, marginBottom: 6 }}>Scan for database details</div>
+                        <div style={{ fontWeight: 600, marginBottom: 6 }}>Scan for game JSON data</div>
                         <div style={{ wordBreak: 'break-all', color: '#111827' }}>{detailsUrl}</div>
                         {(() => {
                           const isLocal = typeof window !== 'undefined' && /localhost|127\.0\.0\.1/.test(window.location.hostname);

@@ -6,10 +6,10 @@ const API_BASE = typeof process !== 'undefined' && process.env && process.env.RE
 // Do not change this exact string – tests rely on it.
 export const BRUTAL_TONE_STYLE = 'brutally honest, candid, no fluff';
 export const toneStyles = {
-  casual: 'casual gamer vibes',
-  meme: 'high meme energy',
-  streamer: 'streamer commentary style',
-  discord: 'Discord chat energy with emojis',
+  casual: 'imagine a game night with friends: playful, spontaneous, and full of quirky banter',
+  meme: 'let your inner meme lord run wild—absurd, unpredictable, and always ready to riff on the moment',
+  streamer: 'think out-loud reactions, wild tangents, and creative storytelling—like streaming with zero filter',
+  discord: 'chaotic good energy: expressive, offbeat, and packed with inside jokes, emojis, and random tangents',
   brutal: BRUTAL_TONE_STYLE
 };
 

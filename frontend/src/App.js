@@ -1,4 +1,5 @@
 import React, { useState, useCallback, useEffect, Suspense, lazy } from 'react';
+// ...existing code...
 import { AISettingsProvider, useAISettings } from './context/AISettingsContext';
 import { AccessibilitySettingsProvider, useAccessibilitySettings } from './context/AccessibilitySettingsContext';
 import axios from 'axios';

@@ -3,6 +3,8 @@
 import { initializeApp } from 'firebase/app';
 import { getAuth, onAuthStateChanged as _onAuthStateChanged, setPersistence, browserLocalPersistence } from 'firebase/auth';
 import { getFirestore } from 'firebase/firestore';
+import { getStorage } from 'firebase/storage';
+
 
 const firebaseConfig = {
   apiKey: process.env.REACT_APP_FIREBASE_API_KEY,
@@ -13,6 +15,7 @@ const firebaseConfig = {
   appId: process.env.REACT_APP_FIREBASE_APP_ID
 };
 
+let storage = null;
 let app = null;
 let auth = null;
 let db = null;
@@ -24,7 +27,8 @@ if (process.env.NODE_ENV !== 'test' && hasConfig) {
   auth = getAuth(app);
   setPersistence(auth, browserLocalPersistence).catch(() => {});
   db = getFirestore(app);
+  storage = getStorage(app); // <-- add this line
   onAuthStateChanged = _onAuthStateChanged;
 }
 
-export { app, auth, db, onAuthStateChanged };
+export { app, auth, db, storage, onAuthStateChanged };

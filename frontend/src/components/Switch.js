@@ -25,8 +25,8 @@ export default function Switch({ checked, onChange, disabled = false, label = nu
   const trackStyle = {
     width: dims.w,
     height: dims.h,
-    background: checked ? '#22c55e' : 'rgba(255,255,255,0.25)',
-    border: `1px solid ${checked ? '#16a34a' : 'rgba(255,255,255,0.35)'}`,
+    background: checked ? '#38bdf8' : 'rgba(255,255,255,0.25)', // sky blue
+    border: `1px solid ${checked ? '#0ea5e9' : 'rgba(255,255,255,0.35)'}`,
     borderRadius: 999,
     position: 'relative',
     cursor: disabled ? 'not-allowed' : 'pointer',
