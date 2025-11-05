@@ -16,7 +16,7 @@
 
 <h5 align="center" style="padding:0;margin:0;">SkyScans Games</h5>
 
-<h6 align="center">Web Demo | 2025</h6>
+<h6 align="center">DV300 - Semester 2 - Term 3 | 2025</h6>
 
 </br>
 
