@@ -26,7 +26,7 @@
     <img src="frontend/public/SkyLogo.png" align="center" alt="Sky Logo" width="140" height="140">
   </a>
 
-  <h3 align="center">Sky Scans Games (SSG) — Web Demo</h3>
+  <h3 align="center">Sky Scans Games (SSG) Dashboard</h3>
 
   <p align="center">
     An AI-augmented game discovery web app with rubric-driven scoring, search, and accessibility-focused UI. Frontend in React, backend in FastAPI with RAWG API integration.
@@ -78,12 +78,15 @@ A web application for discovering games with a focus on accessibility and transp
 
 ### Built With
 
-The RFFS Stack
+The RPFCRS Stack
 
-* React (CRA)
-* Firebase (optional: auth + settings sync)
-* FastAPI (Python) + SQLite (local persistence)
-* RAWG API integration
+* React[<img src="https://commons.wikimedia.org/wiki/File:React-icon.svg" width="7%" height="7%">](https://react.dev/)
+* Python[<img src="https://w7.pngwing.com/pngs/140/948/png-transparent-blue-and-yellow-logo-python-logo-programmer-fierce-python-s-cdr-angle-text-thumbnail.png" width="7%" height="7%">](https://www.python.org/)
+* FastAPI[<img src="https://fastapi.tiangolo.com/img/logo-margin/logo-teal.png" width="7%" height="7%">](https://github.com/fastapi) 
+* Claude[<img src="https://upload.wikimedia.org/wikipedia/commons/thumb/b/b0/Claude_AI_symbol.svg/2048px-Claude_AI_symbol.svg.png" width="7%" height="7%">](https://claude.ai/) 
+* RAWG (Games API)[<img src="https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcTxTh0EandqP7vocgsiIwSh8_s0cY7SHMlC8g&s" width="7%" height="7%">](https://rawg.io/) 
+* SQLite (local persistence)[<img src="https://upload.wikimedia.org/wikipedia/commons/thumb/3/38/SQLite370.svg/2560px-SQLite370.svg.png" width="7%" height="7%">](https://sqlite.org/)
+
 
 <!-- GETTING STARTED -->
 
