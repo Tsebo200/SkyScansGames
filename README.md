@@ -7,6 +7,7 @@
 ![GitHub language count](https://img.shields.io/github/languages/count/Tsebo200/SkyScansGamesDemo2)
 ![GitHub code size in bytes](https://img.shields.io/github/languages/code-size/Tsebo200/SkyScansGamesDemo2)
 ![Github Language](https://img.shields.io/github/languages/top/Tsebo200/SkyScansGamesDemo2)
+![Github Downloads](https://img.shields.io/github/downloads/Tsebo200/SkyScansGamesDemo2/total)
 
 <!-- HEADER SECTION -->
 
@@ -52,7 +53,7 @@
   * [Ideation](#ideation)
   * [Wireframes](#wireframes)
   * [Custom UI](#custom-ui)
-  * [User Flow](#user-flow)
+  * [User Flow](#userflow)
 * [Development Process](#development-process)
   * [Implementation Process](#implementation-process)
        * [Highlights](#highlights)
@@ -201,7 +202,7 @@ Simple multi-panel layout: search, results, details, and a dashboard for score b
 - Reusable React components (`SearchBar`, `ScoreDashboard`, `SettingsModal`)
 - Subtle animations and responsive layout using CSS
 
-### User Flow
+### UserFlow 
 
 1. Search for a title
 2. Review details and rubric scores
@@ -260,6 +261,10 @@ See the [open issues](https://github.com/Tsebo200/SkyScansGamesDemo2/issues) for
 ## Conclusion
 
 This demo showcases a practical approach to transparent, accessibility-aware game discovery with a lightweight, developer-friendly stack.
+
+## Author
+
+* **Tsebo Ramonyalioa** - [Tsebo200](https://github.com/Tsebo200)
 
 ## License
 
