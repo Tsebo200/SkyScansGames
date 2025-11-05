@@ -82,7 +82,7 @@ The RPFCRS Stack
 
 * React[<img src="https://brandslogos.com/wp-content/uploads/images/react-logo-vector-1.svg" width="7%" height="7%">](https://react.dev/)
 * Python[<img src="https://w7.pngwing.com/pngs/140/948/png-transparent-blue-and-yellow-logo-python-logo-programmer-fierce-python-s-cdr-angle-text-thumbnail.png" width="7%" height="7%">](https://www.python.org/)
-* FastAPI[<img src="https://fastapi.tiangolo.com/img/logo-margin/logo-teal.png" width="7%" height="7%">](https://github.com/fastapi) 
+* FastAPI[<img src="https://fastapi.tiangolo.com/img/logo-margin/logo-teal.png" width="15%" height="7%">](https://github.com/fastapi) 
 * Claude[<img src="https://upload.wikimedia.org/wikipedia/commons/thumb/b/b0/Claude_AI_symbol.svg/2048px-Claude_AI_symbol.svg.png" width="7%" height="7%">](https://claude.ai/) 
 * RAWG (Games API)[<img src="https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcTxTh0EandqP7vocgsiIwSh8_s0cY7SHMlC8g&s" width="7%" height="7%">](https://rawg.io/) 
 * SQLite (local persistence)[<img src="https://upload.wikimedia.org/wikipedia/commons/thumb/3/38/SQLite370.svg/2560px-SQLite370.svg.png" width="7%" height="7%">](https://sqlite.org/)
