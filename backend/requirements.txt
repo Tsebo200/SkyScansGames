@@ -6,3 +6,4 @@ cachetools
 ratelimit
 sqlalchemy
 python-dotenv
+beautifulsoup4
