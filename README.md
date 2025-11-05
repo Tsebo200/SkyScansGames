@@ -85,7 +85,7 @@ The RPFCRS Stack
 * FastAPI[<img src="https://fastapi.tiangolo.com/img/logo-margin/logo-teal.png" width="15%" height="7%">](https://github.com/fastapi) 
 * Claude[<img src="https://upload.wikimedia.org/wikipedia/commons/thumb/b/b0/Claude_AI_symbol.svg/2048px-Claude_AI_symbol.svg.png" width="7%" height="7%">](https://claude.ai/) 
 * RAWG (Games API)[<img src="https://encrypted-tbn0.gstatic.com/images?q=tbn:ANd9GcTxTh0EandqP7vocgsiIwSh8_s0cY7SHMlC8g&s" width="7%" height="7%">](https://rawg.io/) 
-* SQLite (local persistence)[<img src="https://upload.wikimedia.org/wikipedia/commons/thumb/3/38/SQLite370.svg/2560px-SQLite370.svg.png" width="7%" height="7%">](https://sqlite.org/)
+* SQLite (local persistence)[<img src="https://upload.wikimedia.org/wikipedia/commons/thumb/3/38/SQLite370.svg/2560px-SQLite370.svg.png" width="15%" height="7%">](https://sqlite.org/)
 
 
 <!-- GETTING STARTED -->
