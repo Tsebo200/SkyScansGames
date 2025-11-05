@@ -37,6 +37,8 @@
     <a href="https://github.com/Tsebo200/SkyScansGames/issues">Report Bug</a>
     ·
     <a href="https://github.com/Tsebo200/SkyScansGames/issues">Request Feature</a>
+    ·
+       <a href="https://github.com/Tsebo200/SRG-SkyRecommendsGames">Companion App (SRG)</a>
   </p>
 
 <!-- TABLE OF CONTENTS -->
