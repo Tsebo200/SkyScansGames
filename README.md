@@ -2,11 +2,11 @@
 
 <br />
 
-![GitHub repo size](https://img.shields.io/github/repo-size/Tsebo200/SkyScansGamesDemo2)
-![GitHub watchers](https://img.shields.io/github/watchers/Tsebo200/SkyScansGamesDemo2)
-![GitHub language count](https://img.shields.io/github/languages/count/Tsebo200/SkyScansGamesDemo2)
-![GitHub code size in bytes](https://img.shields.io/github/languages/code-size/Tsebo200/SkyScansGamesDemo2)
-![Github Language](https://img.shields.io/github/languages/top/Tsebo200/SkyScansGamesDemo2)
+![GitHub repo size](https://img.shields.io/github/repo-size/Tsebo200/SkyScansGames)
+![GitHub watchers](https://img.shields.io/github/watchers/Tsebo200/SkyScansGames)
+![GitHub language count](https://img.shields.io/github/languages/count/Tsebo200/SkyScansGames)
+![GitHub code size in bytes](https://img.shields.io/github/languages/code-size/Tsebo200/SkyScansGames)
+![Github Language](https://img.shields.io/github/languages/top/Tsebo200/SkyScansGames)
 
 <!-- HEADER SECTION -->
 
@@ -32,9 +32,9 @@
    <br />
    <a href="#video-demo">View Demo</a>
     ·
-    <a href="https://github.com/Tsebo200/SkyScansGamesDemo2/issues">Report Bug</a>
+    <a href="https://github.com/Tsebo200/SkyScansGames/issues">Report Bug</a>
     ·
-    <a href="https://github.com/Tsebo200/SkyScansGamesDemo2/issues">Request Feature</a>
+    <a href="https://github.com/Tsebo200/SkyScansGames/issues">Request Feature</a>
   </p>
 
 <!-- TABLE OF CONTENTS -->
@@ -102,8 +102,8 @@ Ensure you have:
 #### 1) Clone Repository
 
 ```sh
-git clone https://github.com/Tsebo200/SkyScansGamesDemo2.git
-cd SkyScansGamesDemo2
+git clone https://github.com/Tsebo200/SkyScansGames.git
+cd SkyScansGames
 ```
 
 #### 2) Backend setup
@@ -138,7 +138,7 @@ python -m uvicorn main:app --reload --host 127.0.0.1 --port 8000
 In a new terminal:
 
 ```sh
-cd SkyScansGamesDemo2/frontend
+cd SkyScansGames/frontend
 npm install
 ```
 
@@ -253,7 +253,7 @@ Modern responsive UI with a focus on readable score breakdowns and accessible co
 
 To see a run-through of the application, add a recording link here when available.
 
-See the [open issues](https://github.com/Tsebo200/SkyScansGamesDemo2/issues) for a list of proposed features (and known issues).
+See the [open issues](https://github.com/Tsebo200/SkyScansGames/issues) for a list of proposed features (and known issues).
 
 <!-- CONCLUSION / LICENSE / CONTACT -->
 
@@ -278,7 +278,7 @@ NC: Only noncommercial uses of the work are permitted.
 ## Contact
 
 * **Tsebo Ramonyalioa** - [tsebo.ramonyalioa.an@gmail.com](mailto:tsebo.ramonyalioa.an@gmail.com)
-* **Project Link** - https://github.com/Tsebo200/SkyScansGamesDemo2
+* **Project Link** - https://github.com/Tsebo200/SkyScansGames
 
 ## Acknowledgements
 
