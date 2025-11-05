@@ -1,118 +1,294 @@
-# SkyScans Games Demo — Dev Notes & Troubleshooting
+<!-- Repository Information & Links-->
 
-This README documents the issues encountered while getting the project running, how we resolved them, and a concise, repeatable setup for macOS (zsh).
+<br />
 
-## Summary of key challenges and fixes
+![GitHub repo size](https://img.shields.io/github/repo-size/Tsebo200/SkyScansGamesDemo2)
+![GitHub watchers](https://img.shields.io/github/watchers/Tsebo200/SkyScansGamesDemo2)
+![GitHub language count](https://img.shields.io/github/languages/count/Tsebo200/SkyScansGamesDemo2)
+![GitHub code size in bytes](https://img.shields.io/github/languages/code-size/Tsebo200/SkyScansGamesDemo2)
+![Github Language](https://img.shields.io/github/languages/top/Tsebo200/SkyScansGamesDemo2)
 
-1) Python version mismatch (global 3.13.7 vs project venv 3.12)
-- Symptoms: Backend wouldn’t start, inconsistent behavior; suspicion it was macOS update, but root cause was Python version drift.
-- Root cause: Global Python was 3.13.7 while the project’s virtual environment and dependencies were set up for 3.12, causing env confusion and modules not loading.
-- Resolution:
-  - Uninstalled Python 3.13.7.
-  - Installed Python 3.12 (3.12.11).
-  - Updated zsh PATH so `python3` resolves to 3.12.
-  - Deleted the project venv and recreated it with Python 3.12.11.
+<!-- HEADER SECTION -->
 
-2) “Error loading ASGI app. Could not import module \"main\"”
-- Cause: Running `uvicorn main:app` from the repository root instead of the `backend/` directory.
-- Fix: Always start Uvicorn from `backend/` (so `main.py` is importable as `main`).
+<h5 align="center" style="padding:0;margin:0;">Tsebo Ramonyalioa</h5>
 
-3) Port conflicts (“Address already in use” on 8000/8001)
-- Cause: A prior Uvicorn instance was holding the port.
-- Fix: `pkill -f "uvicorn main:app"` then start again; or run on a different port.
+<h5 align="center" style="padding:0;margin:0;">SkyScans Games</h5>
 
-4) Missing dependencies (e.g., `requests`) and pip script issues
-- Cause: Venv didn’t have all packages, or zsh executed the `pip` script with a shell exec error.
-- Fix: Use `python -m pip install -r backend/requirements.txt` (invokes pip via Python), and prefer `python -m pip` for all package ops.
+<h6 align="center">Web Demo | 2025</h6>
 
-5) No logs / commands interleaving
-- Cause: Running curl in the same terminal or hitting Ctrl+C while the server runs caused shutdown; reload mode restarts may also interleave logs.
-- Fix: Start the server in its own terminal; run curls in another. If necessary, start without `--reload` for stability while testing.
+</br>
 
-6) Monetisation defaults didn’t appear for some titles initially
-- Cause: Patterns were missing; scans without overrides fell back to Unknown.
-- Fix: Added curated patterns (Skate series, Nightreign, EA Sports families) and used the scan flag `apply_defaults=true` or the admin batch endpoint to populate overrides and fairness.
+<p align="center">
 
-7) Secrets hygiene
-- Observation: `.env` is in `.gitignore`; do not commit API keys. Keep `.env` local.
+  <a href="#">
+    <img src="frontend/public/logo192.png" align="center" alt="Sky Logo" width="140" height="140">
+  </a>
 
-## Clean setup (macOS + zsh)
+  <h3 align="center">Sky Scans Games (SSG) — Web Demo</h3>
 
-1) Ensure Python 3.12.11 is installed and on PATH
-- Confirm: `python3 --version` should show 3.12.x
-- If needed, use python.org installer or a version manager (e.g., pyenv). Update your `~/.zshrc` PATH accordingly.
+  <p align="center">
+    An AI-augmented game discovery web app with rubric-driven scoring, search, and accessibility-focused UI. Frontend in React, backend in FastAPI with RAWG API integration.
+   <br />
+   <br />
+   <a href="#video-demo">View Demo</a>
+    ·
+    <a href="https://github.com/Tsebo200/SkyScansGamesDemo2/issues">Report Bug</a>
+    ·
+    <a href="https://github.com/Tsebo200/SkyScansGamesDemo2/issues">Request Feature</a>
+  </p>
 
-2) Create and activate a fresh virtual environment
-```zsh
-cd /Users/tebstest/Documents/GitHub/SkyScansGamesDemo2
+<!-- TABLE OF CONTENTS -->
+
+## Table of Contents
+
+* [About the Project](#about-the-project)
+  * [Project Description](#project-description)
+  * [Built With](#built-with)
+* [Getting Started](#getting-started)
+  * [Prerequisites](#prerequisites)
+  * [How to install](#how-to-install)
+* [Features and Functionality](#features-and-functionality)
+* [Concept Process](#concept-process)
+  * [Ideation](#ideation)
+  * [Wireframes](#wireframes)
+  * [Custom UI](#custom-ui)
+  * [User Flow](#user-flow)
+* [Development Process](#development-process)
+  * [Implementation Process](#implementation-process)
+       * [Highlights](#highlights)
+       * [Challenges](#challenges)
+  * [Future Implementation](#future-implementation)
+* [Final Outcome](#final-outcome)
+   * [Mockups](#mockups)
+   * [Video Demonstration](#video-demonstration)
+* [Conclusion](#conclusion)
+* [License](#license)
+* [Contact](#contact)
+* [Acknowledgements](#acknowledgements)
+
+<!--PROJECT DESCRIPTION-->
+
+## About the Project
+
+### Project Description
+
+A web application for discovering games with a focus on accessibility and transparent scoring. The app uses rubric-driven scoring (Completeness, Monetisation, Accessibility, Creativity/Innovation) and integrates the RAWG API. The frontend is a React app (Create React App) and the backend is a FastAPI service that proxies RAWG, enriches with heuristics, and persists to SQLite.
+
+### Built With
+
+The RFFS Stack
+
+* React (CRA)
+* Firebase (optional: auth + settings sync)
+* FastAPI (Python) + SQLite (local persistence)
+* RAWG API integration
+
+<!-- GETTING STARTED -->
+
+## Getting Started
+
+The following instructions will get the project running locally for development and testing on macOS/Linux. Windows works similarly with PowerShell.
+
+### Prerequisites
+
+Ensure you have:
+
+- Node.js >= 18 and npm
+- Python 3.12.x
+- curl (for quick endpoint checks)
+
+### How to install
+
+#### 1) Clone Repository
+
+```sh
+git clone https://github.com/Tsebo200/SkyScansGamesDemo2.git
+cd SkyScansGamesDemo2
+```
+
+#### 2) Backend setup
+
+```sh
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
 python -m pip install -r backend/requirements.txt
 ```
 
-3) Start the backend (run from backend/)
-```zsh
+Create a `.env` in the repo root (or export env vars in your shell):
+
+```sh
+# Backend
+RAWG_API_KEY=your_rawg_api_key
+ALLOWED_ORIGINS=http://localhost:3000
+# Optional
+OPENAI_API_KEY=your_openai_key
+DATABASE_URL=/absolute/path/to/skyscans_games.db  # default is repo root file
+```
+
+Start the backend from the `backend/` directory:
+
+```sh
 cd backend
 python -m uvicorn main:app --reload --host 127.0.0.1 --port 8000
 ```
-Expected logs include:
-- “Database initialized successfully”
-- “Application startup complete”
-- “Uvicorn running on http://127.0.0.1:8000”
 
-4) Start the frontend (separate terminal)
-```zsh
-cd /Users/tebstest/Documents/GitHub/SkyScansGamesDemo2/frontend
+#### 3) Frontend setup
+
+In a new terminal:
+
+```sh
+cd SkyScansGamesDemo2/frontend
 npm install
+```
+
+Create a `.env` file in `frontend/` (CRA uses REACT_APP_*):
+
+```sh
+REACT_APP_API_BASE=http://localhost:8000
+
+# Optional Firebase (enable if you want cloud sync)
+REACT_APP_FIREBASE_API_KEY=your_api_key
+REACT_APP_FIREBASE_AUTH_DOMAIN=your_project.firebaseapp.com
+REACT_APP_FIREBASE_PROJECT_ID=your_project_id
+REACT_APP_FIREBASE_STORAGE_BUCKET=your_project.appspot.com
+REACT_APP_FIREBASE_MESSAGING_SENDER_ID=your_sender_id
+REACT_APP_FIREBASE_APP_ID=your_app_id
+```
+
+Run the frontend:
+
+```sh
 npm start
 ```
 
-5) Quick health checks
-- Backend: 
-```zsh
-curl -sS "http://127.0.0.1:8000/api/games/search?q=test" | jq '.results | length'
-```
-- If port is stuck:
-```zsh
-pkill -f "uvicorn main:app" || true
-```
+The React app will open at `http://localhost:3000` and proxy API requests to `http://localhost:8000`.
 
-## Monetisation defaults — quick actions
+<!-- FEATURES AND FUNCTIONALITY-->
 
-We added curated patterns so scans and the batch admin action can annotate monetisation:
-- Skate series (Skate, Skate 2, Skate 3): No MTX; Single-player; P2W: No; Fairness: Perfect.
-- Nightreign: No MTX; Single-player; P2W: No; Fairness: Perfect.
-- EA Sports (FIFA 20–25, Madden NFL 20–25, NHL 20–25, NBA Live 19–23): Ultimate Team with card packs; P2W: Mixed; Fairness: Fair.
+## Features and Functionality
 
-Apply to all matched games and rescan:
-```zsh
-curl -sS -X POST "http://127.0.0.1:8000/api/admin/apply-monetisation-defaults?recalc=true" | jq '.count'
-```
-Rescan individual games with defaults:
-```zsh
-curl -sS -X POST "http://127.0.0.1:8000/api/games/<id>/scan?force=true&apply_defaults=true" | jq -r '.reasoning.monetisation.detailed.fairness_label'
-```
+### Search and Details
+- Debounced search against RAWG via backend proxy
+- Game details view with genres, release info, platforms, and images
 
-## Appendix — verifying shell and Python
+### Scoring & Insights
+- Rubric-based scoring (completeness, monetisation, accessibility, creativity/innovation)
+- Heuristics to classify monetisation tactics and fairness
 
-- Check zsh PATH:
-```zsh
-echo $PATH | tr ':' '\n'
-which python3
-python3 --version
-```
-- Repoint to Python 3.12 if needed (example ~/.zshrc snippet):
-```zsh
-export PATH="/Library/Frameworks/Python.framework/Versions/3.12/bin:$PATH"
-```
-- Recreate venv after switching Python:
-```zsh
-rm -rf .venv
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install -r backend/requirements.txt
-```
+### Accessibility
+- Tone and accessibility settings (high contrast, reduced motion, larger text) in UI
+- Keyboard-friendly components and color considerations
+
+### Settings & Sync (optional)
+- Firebase-based settings sync for user preferences
+- Local-first behavior when not signed in
+
+<!-- CONCEPT PROCESS -->
+
+## Concept Process
+
+### Ideation
+
+Make game discovery transparent and accessible by surfacing monetisation, accessibility indicators, and creativity signals—not just popularity.
+
+### Wireframes
+
+Simple multi-panel layout: search, results, details, and a dashboard for score breakdowns.
+
+### Custom UI
+
+- Reusable React components (`SearchBar`, `ScoreDashboard`, `SettingsModal`)
+- Subtle animations and responsive layout using CSS
+
+### User Flow
+
+1. Search for a title
+2. Review details and rubric scores
+3. Compare or shortlist titles
+4. Adjust accessibility and tone settings
+
+<!-- DEVELOPMENT PROCESS -->
+
+## Development Process
+
+### Implementation Process
+
+* **Frontend**: React (Create React App), Testing Library for unit tests
+* **Backend**: FastAPI (Uvicorn), requests/aiohttp, SQLite for persistence
+* **API Integration**: RAWG API for game data; optional OpenAI for innovation summaries
+* **State Management**: React hooks and context for accessibility/tone settings
+* **Auth/Sync**: Optional Firebase (guarded by env)
+
+#### Highlights
+
+- End-to-end local setup in minutes
+- Heuristic scoring pipeline with cached RAWG calls
+- Optional cloud sync without blocking local dev
+
+#### Challenges
+
+- Python version drift (ensure 3.12.x)
+- CORS and CRA proxy alignment between ports 3000/8000
+- Handling incomplete RAWG fields consistently
+
+### Future Implementation
+
+- Notifications for updates and recommendations
+- Deeper embedding-based similarity
+- Social sharing and lists
+- Advanced filters by genre/platform/score range
+
+<!-- MOCKUPS -->
+
+## Final Outcome
+
+### Mockups
+
+Modern responsive UI with a focus on readable score breakdowns and accessible controls.
+
+### Video Demonstration
+
+<a id="video-demo"></a>
+
+To see a run-through of the application, add a recording link here when available.
+
+See the [open issues](https://github.com/Tsebo200/SkyScansGamesDemo2/issues) for a list of proposed features (and known issues).
+
+<!-- CONCLUSION / LICENSE / CONTACT -->
+
+## Conclusion
+
+This demo showcases a practical approach to transparent, accessibility-aware game discovery with a lightweight, developer-friendly stack.
+
+## License
+
+Copyright (c) 2025 CreativeT by Tsebo Ramonyalioa
+
+This project is licensed under the Creative Commons Attribution-NonCommercial 4.0 International License (CC BY-NC 4.0).
+
+See: https://creativecommons.org/licenses/by-nc/4.0/
+
+SPDX: CC-BY-NC-4.0
+
+BY: credit must be given to the creator.
+
+NC: Only noncommercial uses of the work are permitted.
+
+## Contact
+
+* **Tsebo Ramonyalioa** - [tsebo.ramonyalioa.an@gmail.com](mailto:tsebo.ramonyalioa.an@gmail.com)
+* **Project Link** - https://github.com/Tsebo200/SkyScansGamesDemo2
+
+## Acknowledgements
+
+* RAWG API — https://rawg.io/apidocs
+* FastAPI — https://fastapi.tiangolo.com/
+* React — https://reactjs.org/
+* Firebase — https://firebase.google.com/
+* YouTube — https://www.youtube.com/
+* Open-source community — https://react.dev/
 
 ---
-If you want, I can add a small helper script (scripts/dev-backend.sh) to activate the venv and start Uvicorn in one command.
+
+Developer notes and troubleshooting have moved to a separate section in this README. For Render deployment details, see `backend/README-deploy-render.md`.
