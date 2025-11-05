@@ -22,7 +22,7 @@
 <p align="center">
 
   <a href="#">
-    <img src="frontend/public/logo.svg" align="center" alt="Sky Logo" width="140" height="140">
+    <img src="https://raw.githubusercontent.com/github/explore/main/topics/react/react.png" align="center" alt="React Logo" width="140" height="140">
   </a>
 
   <h3 align="center">Sky Scans Games (SSG) — Web Demo</h3>
