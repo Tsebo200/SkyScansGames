@@ -27,12 +27,15 @@
   </a>
 
   <h3 align="center">Sky Scans Games (SSG) — Web Demo</h3>
+ 
+   
 
   <p align="center">
     An AI-augmented game discovery web app with rubric-driven scoring, search, and accessibility-focused UI. Frontend in React, backend in FastAPI with RAWG API integration.
    <br />
    <br />
    <a href="#video-demo">View Demo</a>
+     <a href="https://github.com/Tsebo200/SRG-SkyRecommendsGames">SRG (Companion App)</a>
     ·
     <a href="https://github.com/Tsebo200/SkyScansGames/issues">Report Bug</a>
     ·
