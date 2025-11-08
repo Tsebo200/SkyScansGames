@@ -5,7 +5,7 @@ import { doc, getDoc, setDoc, updateDoc, serverTimestamp } from 'firebase/firest
 const KEY = 'aiFeedbackEnabled';
 
 const AISettingsContext = createContext({
-  aiFeedbackEnabled: true,
+  aiFeedbackEnabled: false,
   setAIWebhook: () => {},
   setAIFeedbackEnabled: () => {}
 });

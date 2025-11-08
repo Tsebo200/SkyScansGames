@@ -16,14 +16,25 @@ const ScoreDashboard = React.memo(({ scores, game, externalOpenPreview = 0, onPr
   const [rawgLoading, setRawgLoading] = useState(false);
   const [rawgError, setRawgError] = useState(null);
   const [descExpanded, setDescExpanded] = useState(false);
-
-  // Open Game Preview when an external trigger changes
+  // Responsive state
+  const [isMobile, setIsMobile] = useState(typeof window !== 'undefined' ? window.innerWidth < 768 : false);
+ 
+ // Open Game Preview when an external trigger changes
   useEffect(() => {
     if (externalOpenPreview) {
       setShowGamePreview(true);
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [externalOpenPreview]);
+
+ // Responsive window width detection
+  useEffect(() => {
+    const handleResize = () => {
+      setIsMobile(window.innerWidth < 768);
+    };
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
 
   // Notify parent when preview open state changes
   useEffect(() => {
@@ -55,7 +66,14 @@ const ScoreDashboard = React.memo(({ scores, game, externalOpenPreview = 0, onPr
       setDescExpanded(false);
     }
   }, [showGamePreview, defaultDesc, game?.id]);
-
+  // Responsive window width detection
+  useEffect(() => {
+    const handleResize = () => {
+      setIsMobile(window.innerWidth < 768);
+    };
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
   // Fetch RAWG details when Game Preview opens
   useEffect(() => {
     let cancelled = false;
@@ -251,14 +269,14 @@ const ScoreDashboard = React.memo(({ scores, game, externalOpenPreview = 0, onPr
   
   // Details URL (for QR) - now points to specific game's JSON data
   const detailsUrl = useMemo(() => {
-    try {
-      // Point to the specific game's JSON data endpoint
-      return `http://localhost:8000/api/games/${game.id}`;
-    } catch {
-      return `http://localhost:8000/api/games/${game.id}`;
-    }
-  }, [game.id]);
-
+  try {
+    const origin = window?.location?.origin || '';
+    return `${origin}/api/games/${game.id}`;
+  } catch {
+    const apiBase = process.env.REACT_APP_API_BASE || 'http://localhost:8000/api';
+    return `${apiBase}/games/${game.id}`;
+  }
+}, [game.id]);
   // External icon URLs
   const PS_LOGO_URL = useMemo(() => 'https://icon2.cleanpng.com/20180729/qbq/234eef5332a8d317914af0d1b0c5da70.webp', []);
   const PC_LOGO_URL = useMemo(() => 'https://assets.streamlinehq.com/image/private/w_300,h_300,ar_1/f_auto/v1/icons/video-games/steam-2myixiwqkwzmuvfmd69q38.png/steam-6zs7qobtrw9nv56hb122tc.png?_a=DATAg1AAZAA0', []);
@@ -319,8 +337,8 @@ const ScoreDashboard = React.memo(({ scores, game, externalOpenPreview = 0, onPr
     { label: 'Presentation', value: scores.presentation_score ?? scores.graphic_score, color: rc[2], key: 'presentation' },
     { label: 'Technical Performance', value: scores.technical_performance_score ?? scores.microtransactions_score, color: rc[3], key: 'technical_performance' },
     { label: 'Completeness', value: scores.completeness_score, color: rc[4], key: 'completeness_score' },
-    { label: 'Innovation & Creativity', value: scores.innovation_creativity_score, color: rc[5], key: 'innovation_creativity' },
-    { label: 'Community & Longevity', value: scores.community_longevity_score, color: rc[6], key: 'community_longevity' }
+    { label: 'Innovation & Creativity', value: scores.innovation_creativity_score ?? 'N/A', color: rc[5], key: 'innovation_creativity' },
+    { label: 'Community & Longevity', value: scores.community_longevity_score ?? 'N/A', color: rc[6], key: 'community_longevity' }
   ], [scores, rc]);
 
   // Telemetry state (not rendered here, but kept for parity)
@@ -773,40 +791,40 @@ const ScoreDashboard = React.memo(({ scores, game, externalOpenPreview = 0, onPr
         </div>,
         document.body
       )}
-
-      {/* Game Preview modal with tabs */}
+{/* Game Preview modal with tabs */}
       {showGamePreview && createPortal(
-        <div onClick={() => setShowGamePreview(false)} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999 }}>
-          <div onClick={(e) => e.stopPropagation()} style={{ width: 'min(1100px, 98vw)', background: 'rgba(255,255,255,0.98)', borderRadius: 18, border: '1px solid rgba(0,0,0,0.08)', boxShadow: '0 12px 36px rgba(0,0,0,0.3)', overflow: 'hidden' }}>
-            <div style={{ display: 'flex', padding: 16, alignItems: 'center', borderBottom: '1px solid rgba(0,0,0,0.08)' }}>
-              <h3 style={{ margin: 0, fontSize: '1.4rem', fontWeight: 600, color: '#222', flex: 1 }}>{game.title}</h3>
-              <button onClick={() => setShowGamePreview(false)} style={{ border: 'none', background: 'transparent', fontSize: '1.5rem', cursor: 'pointer', color: '#666' }}>×</button>
+        <div onClick={() => setShowGamePreview(false)} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)', display: 'flex', alignItems: isMobile ? 'flex-start' : 'center', justifyContent: 'center', zIndex: 9999, overflowY: 'auto', padding: isMobile ? '10px' : 0 }}>
+          <div onClick={(e) => e.stopPropagation()} style={{ width: isMobile ? '100%' : 'min(1100px, 98vw)', maxWidth: isMobile ? '100%' : '1100px', maxHeight: isMobile ? '100%' : '90vh', background: 'rgba(255,255,255,0.98)', borderRadius: isMobile ? 0 : 18, border: '1px solid rgba(0,0,0,0.08)', boxShadow: '0 12px 36px rgba(0,0,0,0.3)', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+            <div style={{ display: 'flex', padding: isMobile ? '12px' : 16, alignItems: 'center', borderBottom: '1px solid rgba(0,0,0,0.08)', flexShrink: 0 }}>
+              <h3 style={{ margin: 0, fontSize: isMobile ? '1.1rem' : '1.4rem', fontWeight: 600, color: '#222', flex: 1 }}>{game.title}</h3>
+               <button onClick={() => setShowGamePreview(false)} style={{ border: 'none', background: 'transparent', fontSize: isMobile ? '1.3rem' : '1.5rem', cursor: 'pointer', color: '#666', padding: '4px 8px' }}>×</button>
             </div>
-            {/* Increase grid gap and padding for modal content area */}
-            <div style={{ display: 'grid', gridTemplateColumns: '260px 1fr', gap: 20, padding: 20 }}>
-              <div style={{ position: 'relative' }}>
+{/* Increase grid gap and padding for modal content area */}
+            <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '260px 1fr', gap: isMobile ? 12 : 20, padding: isMobile ? '12px' : 20, overflowY: 'auto', flex: 1 }}>
+              <div style={{ position: 'relative', width: isMobile ? '100%' : 'auto' }}>
                 {game.cover_image ? (
-                  <img src={game.cover_image} alt={`${game.title} cover`} style={{ width: '100%', height: 320, objectFit: 'cover', borderRadius: 12, border: '1px solid rgba(0,0,0,0.08)' }} />
+                  <img src={game.cover_image} alt={`${game.title} cover`} style={{ width: '100%', height: isMobile ? 'auto' : 320, maxHeight: isMobile ? '300px' : '320px', objectFit: 'cover', borderRadius: 12, border: '1px solid rgba(0,0,0,0.08)' }} />
                 ) : (
-                  <div style={{ width: '100%', height: 320, borderRadius: 12, border: '1px dashed rgba(0,0,0,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#777' }}>No image</div>
+                  <div style={{ width: '100%', height: isMobile ? '200px' : 320, borderRadius: 12, border: '1px dashed rgba(0,0,0,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#777' }}>No image</div>
                 )}
                 {typeof scores.overall_score === 'number' && (
                   <div
                     title={`Overall Score: ${scores.overall_score}%`}
                     aria-label={`Overall Score ${scores.overall_score} percent`}
                     style={{
-                      position: 'absolute', top: 10, left: 10, width: 72, height: 72, borderRadius: '50%',
+                      position: 'absolute', top: isMobile ? 8 : 10, left: isMobile ? 8 : 10, width: isMobile ? 56 : 72, height: isMobile ? 56 : 72, borderRadius: '50%',
                       background: overallScoreColor, color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center',
-                      fontWeight: 800, fontSize: '1.1rem', boxShadow: '0 6px 16px rgba(0,0,0,0.25)', border: '3px solid #fff'
+                      fontWeight: 800, fontSize: isMobile ? '0.9rem' : '1.1rem', boxShadow: '0 6px 16px rgba(0,0,0,0.25)', border: isMobile ? '2px solid #fff' : '3px solid #fff'
                     }}
                   >
                     {String(scores.overall_score)}%
                   </div>
                 )}
-              </div>
-              {/* Increase vertical spacing between tab bar and content */}
-              <div style={{ display: 'grid', gap: 16 }}>
-                <div role="tablist" aria-label="Game preview tabs" style={{ display: 'flex', gap: 10, borderBottom: '1px solid #e5e7eb', marginBottom: 8, paddingBottom: 4 }}
+              </div>             
+             
+{/* Increase vertical spacing between tab bar and content */}
+              <div style={{ display: 'grid', gap: isMobile ? 12 : 16 }}>
+                <div role="tablist" aria-label="Game preview tabs" style={{ display: 'flex', gap: isMobile ? 6 : 10, borderBottom: '1px solid #e5e7eb', marginBottom: 8, paddingBottom: 4, overflowX: isMobile ? 'auto' : 'visible' }}
                   onKeyDown={(e) => {
                     const order = ['overview','description','awards'];
                     const idx = order.indexOf(previewTab);
@@ -822,11 +840,13 @@ const ScoreDashboard = React.memo(({ scores, game, externalOpenPreview = 0, onPr
                   }}
                 >
                   {['overview', 'description', 'awards'].map(tab => (
-                    <button role="tab" aria-selected={previewTab === tab} key={tab} onClick={() => setPreviewTab(tab)} style={{ border: 'none', background: previewTab === tab ? '#0ea5e9' : 'transparent', color: previewTab === tab ? '#fff' : '#0f172a', padding: '8px 12px', borderRadius: 8, cursor: 'pointer', fontWeight: 600 }}>
+                    <button role="tab" aria-selected={previewTab === tab} key={tab} onClick={() => setPreviewTab(tab)} style={{ border: 'none', background: previewTab === tab ? '#0ea5e9' : 'transparent', color: previewTab === tab ? '#fff' : '#0f172a', padding: isMobile ? '6px 10px' : '8px 12px', borderRadius: 8, cursor: 'pointer', fontWeight: 600, fontSize: isMobile ? '0.9rem' : '1rem', whiteSpace: 'nowrap' }}>
                       {tab === 'overview' ? 'Overview' : tab === 'description' ? 'Description' : 'Awards'}
                     </button>
                   ))}
                 </div>
+
+
 
                 {previewTab === 'overview' && (
                   <div style={tabCardStyle}>
