@@ -277,7 +277,7 @@ const ScoreDashboard = React.memo(({ scores, game, externalOpenPreview = 0, onPr
   const XBOX_LOGO_URL = useMemo(() => 'https://upload.wikimedia.org/wikipedia/commons/e/e5/Xbox_Logo.svg', []);
 
   // Increase padding for tab cards to give more breathing room
-  const tabCardStyle = { background: '#f8fafc', border: '1px solid #e5e7eb', borderRadius: 12, padding: 16 };
+  const tabCardStyle = { background: '#f8fafc', border: '1px solid #e5e7eb', borderRadius: 12, padding: isMobile ? 12 : 16 };
 
   // Platform icon helper
   const PlatformIcon = useCallback(({ name, size = 18 }) => {
@@ -787,28 +787,28 @@ const ScoreDashboard = React.memo(({ scores, game, externalOpenPreview = 0, onPr
 
       {/* Game Preview modal with tabs */}
       {showGamePreview && createPortal(
-        <div onClick={() => setShowGamePreview(false)} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 9999 }}>
-          <div onClick={(e) => e.stopPropagation()} style={{ width: 'min(1100px, 98vw)', background: 'rgba(255,255,255,0.98)', borderRadius: 18, border: '1px solid rgba(0,0,0,0.08)', boxShadow: '0 12px 36px rgba(0,0,0,0.3)', overflow: 'hidden' }}>
-            <div style={{ display: 'flex', padding: 16, alignItems: 'center', borderBottom: '1px solid rgba(0,0,0,0.08)' }}>
-              <h3 style={{ margin: 0, fontSize: '1.4rem', fontWeight: 600, color: '#222', flex: 1 }}>{game.title}</h3>
-              <button onClick={() => setShowGamePreview(false)} style={{ border: 'none', background: 'transparent', fontSize: '1.5rem', cursor: 'pointer', color: '#666' }}>×</button>
+        <div onClick={() => setShowGamePreview(false)} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)', display: 'flex', alignItems: isMobile ? 'flex-start' : 'center', justifyContent: 'center', zIndex: 9999, overflowY: 'auto', padding: isMobile ? '10px' : 0 }}>
+          <div onClick={(e) => e.stopPropagation()} style={{ width: isMobile ? '100%' : 'min(1100px, 98vw)', maxWidth: isMobile ? '100%' : '1100px', maxHeight: isMobile ? '100%' : '90vh', background: 'rgba(255,255,255,0.98)', borderRadius: isMobile ? 0 : 18, border: '1px solid rgba(0,0,0,0.08)', boxShadow: '0 12px 36px rgba(0,0,0,0.3)', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
+            <div style={{ display: 'flex', padding: isMobile ? '12px' : 16, alignItems: 'center', borderBottom: '1px solid rgba(0,0,0,0.08)', flexShrink: 0 }}>
+              <h3 style={{ margin: 0, fontSize: isMobile ? '1.1rem' : '1.4rem', fontWeight: 600, color: '#222', flex: 1 }}>{game.title}</h3>
+              <button onClick={() => setShowGamePreview(false)} style={{ border: 'none', background: 'transparent', fontSize: isMobile ? '1.3rem' : '1.5rem', cursor: 'pointer', color: '#666', padding: '4px 8px' }}>×</button>
             </div>
             {/* Increase grid gap and padding for modal content area */}
-            <div style={{ display: 'grid', gridTemplateColumns: '260px 1fr', gap: 20, padding: 20 }}>
-              <div style={{ position: 'relative' }}>
+            <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '260px 1fr', gap: isMobile ? 12 : 20, padding: isMobile ? '12px' : 20, overflowY: 'auto', flex: 1 }}>
+              <div style={{ position: 'relative', width: isMobile ? '100%' : 'auto' }}>
                 {game.cover_image ? (
-                  <img src={game.cover_image} alt={`${game.title} cover`} style={{ width: '100%', height: 320, objectFit: 'cover', borderRadius: 12, border: '1px solid rgba(0,0,0,0.08)' }} />
+                  <img src={game.cover_image} alt={`${game.title} cover`} style={{ width: '100%', height: isMobile ? 'auto' : 320, maxHeight: isMobile ? '300px' : '320px', objectFit: 'cover', borderRadius: 12, border: '1px solid rgba(0,0,0,0.08)' }} />
                 ) : (
-                  <div style={{ width: '100%', height: 320, borderRadius: 12, border: '1px dashed rgba(0,0,0,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#777' }}>No image</div>
+                  <div style={{ width: '100%', height: isMobile ? '200px' : 320, borderRadius: 12, border: '1px dashed rgba(0,0,0,0.2)', display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#777' }}>No image</div>
                 )}
                 {typeof scores.overall_score === 'number' && (
                   <div
                     title={`Overall Score: ${scores.overall_score}%`}
                     aria-label={`Overall Score ${scores.overall_score} percent`}
                     style={{
-                      position: 'absolute', top: 10, left: 10, width: 72, height: 72, borderRadius: '50%',
+                      position: 'absolute', top: isMobile ? 8 : 10, left: isMobile ? 8 : 10, width: isMobile ? 56 : 72, height: isMobile ? 56 : 72, borderRadius: '50%',
                       background: overallScoreColor, color: '#fff', display: 'flex', alignItems: 'center', justifyContent: 'center',
-                      fontWeight: 800, fontSize: '1.1rem', boxShadow: '0 6px 16px rgba(0,0,0,0.25)', border: '3px solid #fff'
+                      fontWeight: 800, fontSize: isMobile ? '0.9rem' : '1.1rem', boxShadow: '0 6px 16px rgba(0,0,0,0.25)', border: isMobile ? '2px solid #fff' : '3px solid #fff'
                     }}
                   >
                     {String(scores.overall_score)}%
@@ -816,8 +816,8 @@ const ScoreDashboard = React.memo(({ scores, game, externalOpenPreview = 0, onPr
                 )}
               </div>
               {/* Increase vertical spacing between tab bar and content */}
-              <div style={{ display: 'grid', gap: 16 }}>
-                <div role="tablist" aria-label="Game preview tabs" style={{ display: 'flex', gap: 10, borderBottom: '1px solid #e5e7eb', marginBottom: 8, paddingBottom: 4 }}
+              <div style={{ display: 'grid', gap: isMobile ? 12 : 16 }}>
+                <div role="tablist" aria-label="Game preview tabs" style={{ display: 'flex', gap: isMobile ? 6 : 10, borderBottom: '1px solid #e5e7eb', marginBottom: 8, paddingBottom: 4, overflowX: isMobile ? 'auto' : 'visible' }}
                   onKeyDown={(e) => {
                     const order = ['overview','description','awards'];
                     const idx = order.indexOf(previewTab);
@@ -833,7 +833,7 @@ const ScoreDashboard = React.memo(({ scores, game, externalOpenPreview = 0, onPr
                   }}
                 >
                   {['overview', 'description', 'awards'].map(tab => (
-                    <button role="tab" aria-selected={previewTab === tab} key={tab} onClick={() => setPreviewTab(tab)} style={{ border: 'none', background: previewTab === tab ? '#0ea5e9' : 'transparent', color: previewTab === tab ? '#fff' : '#0f172a', padding: '8px 12px', borderRadius: 8, cursor: 'pointer', fontWeight: 600 }}>
+                    <button role="tab" aria-selected={previewTab === tab} key={tab} onClick={() => setPreviewTab(tab)} style={{ border: 'none', background: previewTab === tab ? '#0ea5e9' : 'transparent', color: previewTab === tab ? '#fff' : '#0f172a', padding: isMobile ? '6px 10px' : '8px 12px', borderRadius: 8, cursor: 'pointer', fontWeight: 600, fontSize: isMobile ? '0.9rem' : '1rem', whiteSpace: 'nowrap' }}>
                       {tab === 'overview' ? 'Overview' : tab === 'description' ? 'Description' : 'Awards'}
                     </button>
                   ))}
@@ -842,21 +842,21 @@ const ScoreDashboard = React.memo(({ scores, game, externalOpenPreview = 0, onPr
                 {previewTab === 'overview' && (
                   <div style={tabCardStyle}>
                     {/* Add more row spacing inside the overview card */}
-                    <div style={{ display: 'grid', gap: 16 }}>
-                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, color: '#333' }}>
-                        {game.release_year && <span style={{ padding: '6px 10px', background: '#eef2ff', borderRadius: 8, border: '1px solid #dbe4ff' }}>Year: <strong>{game.release_year}</strong></span>}
-                        {game.release_date && <span style={{ padding: '6px 10px', background: '#f0f9ff', borderRadius: 8, border: '1px solid #cff0ff' }}>Released: <strong>{game.release_date}</strong></span>}
+                    <div style={{ display: 'grid', gap: isMobile ? 12 : 16 }}>
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: isMobile ? 8 : 12, color: '#333' }}>
+                        {game.release_year && <span style={{ padding: isMobile ? '5px 8px' : '6px 10px', background: '#eef2ff', borderRadius: 8, border: '1px solid #dbe4ff', fontSize: isMobile ? '0.85rem' : '0.9rem' }}>Year: <strong>{game.release_year}</strong></span>}
+                        {game.release_date && <span style={{ padding: isMobile ? '5px 8px' : '6px 10px', background: '#f0f9ff', borderRadius: 8, border: '1px solid #cff0ff', fontSize: isMobile ? '0.85rem' : '0.9rem' }}>Released: <strong>{game.release_date}</strong></span>}
                         {rawgDetails?.age_rating && (
-                          <span style={{ padding: '6px 10px', background: '#fef3c7', borderRadius: 8, border: '1px solid #fde68a' }}>Age Rating: <strong>{rawgDetails.age_rating}</strong></span>
+                          <span style={{ padding: isMobile ? '5px 8px' : '6px 10px', background: '#fef3c7', borderRadius: 8, border: '1px solid #fde68a', fontSize: isMobile ? '0.85rem' : '0.9rem' }}>Age Rating: <strong>{rawgDetails.age_rating}</strong></span>
                         )}
                       </div>
                       {(() => {
                         const list = Array.isArray(game.platforms) && game.platforms.length > 0 ? game.platforms : (game.platform ? [game.platform] : []);
                         if (!list.length) return null;
                         return (
-                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12 }}>
+                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: isMobile ? 8 : 12 }}>
                             {list.map((p, idx) => (
-                              <span key={`${p}-${idx}`} style={{ display: 'inline-flex', alignItems: 'center', gap: 8, padding: '8px 12px', background: '#f8fafc', borderRadius: 999, border: '1px solid #e5e7eb', color: '#111827', fontSize: '0.9rem', whiteSpace: 'nowrap', lineHeight: 1.25 }}>
+                              <span key={`${p}-${idx}`} style={{ display: 'inline-flex', alignItems: 'center', gap: isMobile ? 6 : 8, padding: isMobile ? '6px 10px' : '8px 12px', background: '#f8fafc', borderRadius: 999, border: '1px solid #e5e7eb', color: '#111827', fontSize: isMobile ? '0.8rem' : '0.9rem', whiteSpace: 'nowrap', lineHeight: 1.25 }}>
                                 <PlatformIcon name={p} />
                                 <span style={{ whiteSpace: 'nowrap' }}>{p}</span>
                               </span>
@@ -865,7 +865,7 @@ const ScoreDashboard = React.memo(({ scores, game, externalOpenPreview = 0, onPr
                         );
                       })()}
                       {/* RAWG genres/developers/publishers */}
-                      <div style={{ display: 'grid', gap: 8 }}>
+                      <div style={{ display: 'grid', gap: isMobile ? 6 : 8 }}>
                         {rawgLoading && (
                           <div style={{ color: '#64748b', fontSize: '0.9rem' }}>Loading RAWG details…</div>
                         )}
@@ -942,12 +942,12 @@ const ScoreDashboard = React.memo(({ scores, game, externalOpenPreview = 0, onPr
                             : []);
                       return (
                         <>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-                            <span style={{ fontSize: '1rem', fontWeight: 700, color: '#0f172a' }}>Awards</span>
-                            <span style={{ fontSize: '0.8rem', color: '#64748b' }}>curated; verify with official sources</span>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: isMobile ? 6 : 8, marginBottom: 6, flexWrap: isMobile ? 'wrap' : 'nowrap' }}>
+                            <span style={{ fontSize: isMobile ? '0.9rem' : '1rem', fontWeight: 700, color: '#0f172a' }}>Awards</span>
+                            <span style={{ fontSize: isMobile ? '0.7rem' : '0.8rem', color: '#64748b' }}>curated; verify with official sources</span>
                           </div>
                           {awards.length ? (
-                            <ul style={{ margin: 0, padding: '0 0 0 18px', color: '#111827' }}>
+                            <ul style={{ margin: 0, padding: '0 0 0 18px', color: '#111827', fontSize: isMobile ? '0.85rem' : '0.9rem' }}>
                               {awards.map((a, i) => (
                                 <li key={i} style={{ marginBottom: 4, lineHeight: 1.3 }}>
                                   <span style={{ fontWeight: 600 }}>{a.name}</span>
@@ -957,7 +957,7 @@ const ScoreDashboard = React.memo(({ scores, game, externalOpenPreview = 0, onPr
                               ))}
                             </ul>
                           ) : (
-                            <div style={{ color: '#475569' }}>No awards data available.</div>
+                            <div style={{ color: '#475569', fontSize: isMobile ? '0.85rem' : '0.9rem' }}>No awards data available.</div>
                           )}
                         </>
                       );
@@ -968,9 +968,9 @@ const ScoreDashboard = React.memo(({ scores, game, externalOpenPreview = 0, onPr
                 {previewTab === 'description' && (
                   <div style={tabCardStyle}>
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-                      <span style={{ fontSize: '1rem', fontWeight: 700, color: '#0f172a' }}>About this game</span>
+                      <span style={{ fontSize: isMobile ? '0.9rem' : '1rem', fontWeight: 700, color: '#0f172a' }}>About this game</span>
                     </div>
-                    <div style={{ color: '#111827', fontSize: '0.95rem', lineHeight: 1.5 }}>
+                    <div style={{ color: '#111827', fontSize: isMobile ? '0.85rem' : '0.95rem', lineHeight: 1.5 }}>
                       <p style={{ marginTop: 0 }}>
                         {game.title}{game.release_year ? ` (${game.release_year})` : ''}
                         {Array.isArray(game.platforms) && game.platforms.length ? ` • Available on ${game.platforms.join(', ')}` : (game.platform ? ` • Platform: ${game.platform}` : '')}
@@ -979,12 +979,12 @@ const ScoreDashboard = React.memo(({ scores, game, externalOpenPreview = 0, onPr
                         {rawgLoading ? 'Loading RAWG description…' : (rawgDescDisplay || 'No description available.')}
                       </p>
                       {canExpandDesc && !rawgLoading && (
-                        <button onClick={() => setDescExpanded(v => !v)} style={{ border: '1px solid #cbd5e1', background: '#fff', color: '#0f172a', borderRadius: 8, padding: '6px 10px', cursor: 'pointer' }}>
+                        <button onClick={() => setDescExpanded(v => !v)} style={{ border: '1px solid #cbd5e1', background: '#fff', color: '#0f172a', borderRadius: 8, padding: isMobile ? '5px 8px' : '6px 10px', cursor: 'pointer', fontSize: isMobile ? '0.85rem' : '0.9rem' }}>
                           {descExpanded ? 'Show less' : 'Show more'}
                         </button>
                       )}
                       <div style={{ marginTop: 10 }}>
-                        <div style={{ fontWeight: 600, color: '#0f172a', marginBottom: 6 }}>Why play</div>
+                        <div style={{ fontWeight: 600, color: '#0f172a', marginBottom: 6, fontSize: isMobile ? '0.9rem' : '1rem' }}>Why play</div>
                         <ul style={{ margin: 0, padding: '0 0 0 18px' }}>
                           <li style={{ marginBottom: 6 }}>{(localScores || scores)?.reasoning?.core_gameplay?.short || 'Strong core gameplay loop.'}</li>
                           <li style={{ marginBottom: 6 }}>{(localScores || scores)?.reasoning?.story_immersion?.short || 'Engaging narrative and worldbuilding.'}</li>
