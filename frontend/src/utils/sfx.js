@@ -8,7 +8,9 @@ const getCtx = () => {
     if (!AC) return null;
     if (!ctx) ctx = new AC();
     // Best effort resume (needed after user gesture on some browsers)
-    if (ctx.state === 'suspended') ctx.resume?.();
+    if (ctx.state === 'suspended') {
+      ctx.resume().catch(() => {});
+    }
     unlocked = true;
     return ctx;
   } catch {
@@ -50,20 +52,33 @@ const arpeggio = (base = 440, steps = [0, 4, 7, 12], gap = 0.06, opt = {}) => {
 
 export const sfx = {
   // Call this on a direct user gesture (e.g., search click) to ensure audio unlock
-  unlock: () => { getCtx(); },
+  unlock: () => {
+    const c = getCtx();
+    if (c && c.state === 'suspended') {
+      c.resume().catch(() => {});
+    }
+  },
   scanStart: () => {
+    // Ensure audio context is unlocked
+    sfx.unlock();
     // Subtle rising up-sweep
     arpeggio(370, [0, 3, 7], 0.07, { type: 'sine', gain: 0.035, duration: 0.12 });
   },
   scanDone: () => {
+    // Ensure audio context is unlocked
+    sfx.unlock();
     // Pleasant confirmation chime
     arpeggio(523.25, [0, 7, 12], 0.08, { type: 'triangle', gain: 0.045, duration: 0.14 });
   },
   scoreReveal: () => {
+    // Ensure audio context is unlocked
+    sfx.unlock();
     // Short sparkle
     arpeggio(659.25, [0, 5, 9, 12], 0.05, { type: 'sine', gain: 0.035, duration: 0.10 });
   },
   recommendation: () => {
+    // Ensure audio context is unlocked
+    sfx.unlock();
     // Soft notification ping
     beep({ type: 'sine', freq: 880, gain: 0.03, duration: 0.12 });
     beep({ type: 'sine', freq: 1174.66, gain: 0.025, duration: 0.10, startTime: 0.08 });

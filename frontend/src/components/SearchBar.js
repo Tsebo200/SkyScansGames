@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import axios from 'axios';
 import { debounce } from 'lodash';
+import sfx from '../utils/sfx';
 
 const SearchBar = React.memo(({ onGameSelect, hideVariants: hideVariantsProp, onChangeHideVariants }) => {
   const [query, setQuery] = useState('');
@@ -112,6 +113,8 @@ const SearchBar = React.memo(({ onGameSelect, hideVariants: hideVariantsProp, on
   }, []);
 
   const handleSelect = useCallback((game) => {
+    // Unlock audio on user interaction
+    try { sfx.unlock(); } catch {}
     onGameSelect(game);
     setQuery('');
     setResults([]);
@@ -262,7 +265,11 @@ const SearchBar = React.memo(({ onGameSelect, hideVariants: hideVariantsProp, on
         <input
           type="text"
           value={query}
-          onChange={(e) => setQuery(e.target.value)}
+          onChange={(e) => {
+            setQuery(e.target.value);
+            // Unlock audio on first user interaction
+            try { sfx.unlock(); } catch {}
+          }}
           onKeyDown={handleKeyDown}
           role="combobox"
           aria-expanded={results.length > 0}
@@ -284,7 +291,11 @@ const SearchBar = React.memo(({ onGameSelect, hideVariants: hideVariantsProp, on
             boxShadow: '0 4px 20px rgba(0, 0, 0, 0.1)',
             transition: 'all 0.3s ease'
           }}
-          onFocus={(e) => e.target.style.boxShadow = '0 4px 20px rgba(0, 0, 0, 0.2)'}
+          onFocus={(e) => {
+            e.target.style.boxShadow = '0 4px 20px rgba(0, 0, 0, 0.2)';
+            // Unlock audio on first user interaction
+            try { sfx.unlock(); } catch {}
+          }}
           onBlur={(e) => e.target.style.boxShadow = '0 4px 20px rgba(0, 0, 0, 0.1)'}
         />
         {loading && (

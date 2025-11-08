@@ -162,6 +162,22 @@ const AppInner = React.memo(() => {
   const isLight = theme === 'light';
   const fontScale = fontSize === 'small' ? 0.95 : fontSize === 'large' ? 1.08 : 1.0;
 
+  // Unlock audio on first user interaction (click anywhere on page)
+  useEffect(() => {
+    const unlockAudio = () => {
+      try { sfx.unlock(); } catch {}
+    };
+    // Try to unlock on page load
+    unlockAudio();
+    // Also unlock on first click anywhere
+    document.addEventListener('click', unlockAudio, { once: true });
+    document.addEventListener('touchstart', unlockAudio, { once: true });
+    return () => {
+      document.removeEventListener('click', unlockAudio);
+      document.removeEventListener('touchstart', unlockAudio);
+    };
+  }, []);
+
   // If user clicked the bubble before scores finished loading, open preview once ready
   useEffect(() => {
     if (selectedGame && pendingOpenPreview && scores) {
