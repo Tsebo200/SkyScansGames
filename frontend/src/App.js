@@ -178,6 +178,18 @@ const AppInner = React.memo(() => {
       const apiBase = process.env.REACT_APP_API_BASE || (process.env.NODE_ENV === 'production' ? '/api' : 'http://localhost:8000/api');
       const response = await axios.post(`${apiBase}/games/${game.id}/scan`);
       setScores(response.data.scores);
+      
+      // Fetch updated game object with release_year and release_date from database
+      try {
+        const gameResponse = await axios.get(`${apiBase}/games/${game.id}`);
+        if (gameResponse.data) {
+          setSelectedGame(gameResponse.data);
+        }
+      } catch (gameError) {
+        console.warn('Could not fetch updated game object:', gameError);
+        // Continue with original game object if fetch fails
+      }
+      
       try { sfx.scanDone(); sfx.scoreReveal(); } catch {}
     } catch (error) {
       console.error('Scan error:', error);
