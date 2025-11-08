@@ -954,7 +954,7 @@ const ScoreDashboard = React.memo(({ scores, game, externalOpenPreview = 0, onPr
                   </div>
                 )}
                 {previewTab === 'awards' && (
-                  <div style={tabCardStyle}>
+                  <div style={{ ...tabCardStyle, padding: isMobile ? '10px' : '12px' }}>
                     {(() => {
                       const awards = Array.isArray(game?.awards) && game.awards.length
                         ? game.awards
@@ -967,14 +967,14 @@ const ScoreDashboard = React.memo(({ scores, game, externalOpenPreview = 0, onPr
                             : []);
                       return (
                         <>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 }}>
-                            <span style={{ fontSize: '1rem', fontWeight: 700, color: '#0f172a' }}>Awards</span>
-                            <span style={{ fontSize: '0.8rem', color: '#64748b' }}>curated; verify with official sources</span>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: isMobile ? 6 : 8, marginBottom: isMobile ? 4 : 6, flexWrap: 'wrap' }}>
+                            <span style={{ fontSize: isMobile ? '0.9rem' : '1rem', fontWeight: 700, color: '#0f172a' }}>Awards</span>
+                            <span style={{ fontSize: isMobile ? '0.7rem' : '0.8rem', color: '#64748b' }}>curated; verify with official sources</span>
                           </div>
                           {awards.length ? (
-                            <ul style={{ margin: 0, padding: '0 0 0 18px', color: '#111827' }}>
+                            <ul style={{ margin: 0, padding: '0 0 0 18px', color: '#111827', fontSize: isMobile ? '0.85rem' : '0.9rem' }}>
                               {awards.map((a, i) => (
-                                <li key={i} style={{ marginBottom: 4, lineHeight: 1.3 }}>
+                                <li key={i} style={{ marginBottom: isMobile ? 2 : 3, lineHeight: 1.25 }}>
                                   <span style={{ fontWeight: 600 }}>{a.name}</span>
                                   {a.organization ? ` — ${a.organization}` : ''}
                                   {a.year ? ` (${a.year})` : ''}
@@ -982,7 +982,7 @@ const ScoreDashboard = React.memo(({ scores, game, externalOpenPreview = 0, onPr
                               ))}
                             </ul>
                           ) : (
-                            <div style={{ color: '#475569' }}>No awards data available.</div>
+                            <div style={{ color: '#475569', fontSize: isMobile ? '0.85rem' : '0.9rem' }}>No awards data available.</div>
                           )}
                         </>
                       );
