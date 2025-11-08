@@ -11,7 +11,7 @@ const AISettingsContext = createContext({
 });
 
 export function AISettingsProvider({ children }) {
-  const [aiFeedbackEnabled, setEnabled] = useState(true);
+  const [aiFeedbackEnabled, setEnabled] = useState(false);
   const [userId, setUserId] = useState(null);
 
   useEffect(() => {
@@ -34,7 +34,7 @@ export function AISettingsProvider({ children }) {
         if (typeof remote === 'boolean') setEnabled(remote);
       } else {
         // Initialise with current local value
-        await setDoc(ref, { settings: { aiFeedbackEnabled: true }, createdAt: serverTimestamp(), updatedAt: serverTimestamp() }, { merge: true });
+        await setDoc(ref, { settings: { aiFeedbackEnabled: false }, createdAt: serverTimestamp(), updatedAt: serverTimestamp() }, { merge: true });
       }
     });
     return () => unsub();
