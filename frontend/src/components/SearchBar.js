@@ -8,6 +8,7 @@ const SearchBar = React.memo(({ onGameSelect, hideVariants: hideVariantsProp, on
   const [loading, setLoading] = useState(false);
   const [activeIndex, setActiveIndex] = useState(-1);
   const optionsRef = useRef({});
+  const [isMobile, setIsMobile] = useState(typeof window !== 'undefined' ? window.innerWidth < 768 : false);
   // Speech-to-text support
   const [isSpeechSupported, setIsSpeechSupported] = useState(false);
   const [isListening, setIsListening] = useState(false);
@@ -53,7 +54,8 @@ const SearchBar = React.memo(({ onGameSelect, hideVariants: hideVariantsProp, on
         return;
       }
       setLoading(true);
-      axios.get('http://localhost:8000/api/games/search', { params: { q } })
+      const apiBase = process.env.REACT_APP_API_BASE || 'http://localhost:8000/api';
+      axios.get(`${apiBase}/games/search`, { params: { q } })
         .then(response => {
           let data = Array.isArray(response.data) ? response.data : [];
           // Optional filter of variants
@@ -88,6 +90,15 @@ const SearchBar = React.memo(({ onGameSelect, hideVariants: hideVariantsProp, on
     setActiveIndex(-1);
     return () => debouncedSearch.cancel();
   }, [query, debouncedSearch]);
+
+  // Responsive window width detection
+  useEffect(() => {
+    const handleResize = () => {
+      setIsMobile(window.innerWidth < 768);
+    };
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
 
   // Detect Web Speech API support
   useEffect(() => {
@@ -218,8 +229,8 @@ const SearchBar = React.memo(({ onGameSelect, hideVariants: hideVariantsProp, on
           src={game.cover_image}
           alt={game.title}
           style={{
-            width: '48px',
-            height: '48px',
+            width: isMobile ? '40px' : '48px',
+            height: isMobile ? '40px' : '48px',
             objectFit: 'cover',
             borderRadius: '8px',
             boxShadow: '0 2px 6px rgba(0,0,0,0.15)'
@@ -228,22 +239,22 @@ const SearchBar = React.memo(({ onGameSelect, hideVariants: hideVariantsProp, on
         />
       )}
       <div style={{ flex: 1 }}>
-        <strong style={{ color: '#000', fontSize: '16px', display: 'block' }}>{game.title || 'Unknown Game'}</strong>
-        <small style={{ color: '#666', fontSize: '13px', display:'block' }}>
+        <strong style={{ color: '#000', fontSize: isMobile ? '14px' : '16px', display: 'block' }}>{game.title || 'Unknown Game'}</strong>
+        <small style={{ color: '#666', fontSize: isMobile ? '12px' : '13px', display:'block' }}>
           {game.generation ? `Generation ${game.generation}` : 'Unknown Generation'} • {game.platform || 'Unknown Platform'}
         </small>
         {Array.isArray(game.platforms) && game.platforms.length > 0 && (
-          <small style={{ color: '#888', fontSize: '12px', display:'block', marginTop:'2px' }}>
-            {game.platforms.slice(0, 6).join(', ')}{game.platforms.length > 6 ? '…' : ''}
+          <small style={{ color: '#888', fontSize: isMobile ? '11px' : '12px', display:'block', marginTop:'2px' }}>
+            {game.platforms.slice(0, isMobile ? 4 : 6).join(', ')}{game.platforms.length > (isMobile ? 4 : 6) ? '…' : ''}
           </small>
         )}
       </div>
     </li>
   );
-  }), [results, handleSelect, activeIndex]);
+  }), [results, handleSelect, activeIndex, isMobile]);
 
   return (
-    <div style={{ position: 'relative', width: '100%', maxWidth: '500px' }}>
+    <div style={{ position: 'relative', width: '100%', maxWidth: isMobile ? '100%' : '500px' }}>
       <style>
         {`input::placeholder { color: white; }`}
       </style>
@@ -260,14 +271,14 @@ const SearchBar = React.memo(({ onGameSelect, hideVariants: hideVariantsProp, on
           placeholder="Search for games..."
           style={{
             width: '100%',
-            padding: '14px 18px',
+            padding: isMobile ? '12px 16px' : '14px 18px',
             // Add extra right padding so the loading text doesn't overlap typed text
-            paddingRight: '64px',
+            paddingRight: isMobile ? '56px' : '64px',
             borderRadius: '25px',
             border: '1px solid rgba(255, 255, 255, 0.2)',
             background: 'rgba(255, 255, 255, 0.15)',
             color: '#fff',
-            fontSize: '16px',
+            fontSize: isMobile ? '14px' : '16px',
             outline: 'none',
             boxShadow: '0 4px 20px rgba(0, 0, 0, 0.1)',
             transition: 'all 0.3s ease'
@@ -278,11 +289,11 @@ const SearchBar = React.memo(({ onGameSelect, hideVariants: hideVariantsProp, on
         {loading && (
           <div style={{
             position: 'absolute',
-            right: '60px',
+            right: isMobile ? '52px' : '60px',
             top: '50%',
             transform: 'translateY(-50%)',
             color: '#fff',
-            fontSize: '13px',
+            fontSize: isMobile ? '12px' : '13px',
             pointerEvents: 'none'
           }}>
             Searching...
@@ -302,8 +313,8 @@ const SearchBar = React.memo(({ onGameSelect, hideVariants: hideVariantsProp, on
             border: '1px solid rgba(255,255,255,0.35)',
             background: isListening ? 'rgba(14,165,233,0.85)' : 'rgba(255,255,255,0.2)',
             color: '#fff',
-            width: 36,
-            height: 36,
+            width: isMobile ? 32 : 36,
+            height: isMobile ? 32 : 36,
             padding: 0,
             borderRadius: '50%',
             cursor: isSpeechSupported ? 'pointer' : 'not-allowed',
@@ -331,7 +342,7 @@ const SearchBar = React.memo(({ onGameSelect, hideVariants: hideVariantsProp, on
           zIndex: 1000,
           boxShadow: '0 4px 20px rgba(0, 0, 0, 0.1)',
           border: '1px solid rgba(255, 255, 255, 0.3)',
-          maxHeight: '250px',
+          maxHeight: isMobile ? '200px' : '250px',
           overflowY: 'auto'
         }}>
           {resultsList}

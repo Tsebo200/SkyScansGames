@@ -16,6 +16,8 @@ const ScoreDashboard = React.memo(({ scores, game, externalOpenPreview = 0, onPr
   const [rawgLoading, setRawgLoading] = useState(false);
   const [rawgError, setRawgError] = useState(null);
   const [descExpanded, setDescExpanded] = useState(false);
+  // Responsive state
+  const [isMobile, setIsMobile] = useState(typeof window !== 'undefined' ? window.innerWidth < 768 : false);
 
   // Open Game Preview when an external trigger changes
   useEffect(() => {
@@ -55,6 +57,15 @@ const ScoreDashboard = React.memo(({ scores, game, externalOpenPreview = 0, onPr
       setDescExpanded(false);
     }
   }, [showGamePreview, defaultDesc, game?.id]);
+
+  // Responsive window width detection
+  useEffect(() => {
+    const handleResize = () => {
+      setIsMobile(window.innerWidth < 768);
+    };
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
 
   // Fetch RAWG details when Game Preview opens
   useEffect(() => {
@@ -249,13 +260,13 @@ const ScoreDashboard = React.memo(({ scores, game, externalOpenPreview = 0, onPr
   }, [rawgDescEffective, descExpanded]);
 
   
-  // Details URL (for QR) - now points to specific game's JSON data
+  // Details URL (for QR)
   const detailsUrl = useMemo(() => {
     try {
-      // Point to the specific game's JSON data endpoint
-      return `http://localhost:8000/api/games/${game.id}`;
+      const origin = window?.location?.origin || '';
+      return `${origin}/api/games/${game.id}`;
     } catch {
-      return `http://localhost:8000/api/games/${game.id}`;
+      return `/api/games/${game.id}`;
     }
   }, [game.id]);
 
@@ -594,7 +605,7 @@ const ScoreDashboard = React.memo(({ scores, game, externalOpenPreview = 0, onPr
   }, []);
 
   return (
-    <div style={{ padding: '20px' }}>
+    <div style={{ padding: isMobile ? '10px' : '20px' }}>
       <h2
         onClick={() => setShowGamePreview(true)}
         title="Tap to preview game details"
@@ -602,9 +613,9 @@ const ScoreDashboard = React.memo(({ scores, game, externalOpenPreview = 0, onPr
         tabIndex={0}
         onKeyDown={(e) => activateOnKey(e, () => setShowGamePreview(true))}
         style={{
-          color: '#fff', textAlign: 'center', marginBottom: '15px', background: 'rgba(255, 255, 255, 0.1)',
-          padding: '15px 30px', borderRadius: '25px', border: '1px solid rgba(255, 255, 255, 0.2)',
-          boxShadow: '0 4px 20px rgba(0, 0, 0, 0.1)', fontSize: '2rem', fontWeight: '300', cursor: 'pointer'
+          color: '#fff', textAlign: 'center', marginBottom: isMobile ? '10px' : '15px', background: 'rgba(255, 255, 255, 0.1)',
+          padding: isMobile ? '12px 20px' : '15px 30px', borderRadius: '25px', border: '1px solid rgba(255, 255, 255, 0.2)',
+          boxShadow: '0 4px 20px rgba(0, 0, 0, 0.1)', fontSize: isMobile ? '1.5rem' : '2rem', fontWeight: '300', cursor: 'pointer'
         }}
       >
         {game.title} - Quality Analysis
@@ -631,11 +642,11 @@ const ScoreDashboard = React.memo(({ scores, game, externalOpenPreview = 0, onPr
       </div>
 
       {/* Metric tiles */}
-      <div ref={cardsContainerRef} onKeyDown={handleContainerArrowNav} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))', gap: '25px', marginBottom: '30px' }}>
+      <div ref={cardsContainerRef} onKeyDown={handleContainerArrowNav} style={{ display: 'grid', gridTemplateColumns: isMobile ? 'repeat(auto-fit, minmax(150px, 1fr))' : 'repeat(auto-fit, minmax(250px, 1fr))', gap: isMobile ? '15px' : '25px', marginBottom: isMobile ? '20px' : '30px' }}>
         {rubricItems.map((item, index) => (
           <div key={index}
             style={{
-              background: 'rgba(255, 255, 255, 0.1)', borderRadius: '20px', padding: '25px', textAlign: 'center',
+              background: 'rgba(255, 255, 255, 0.1)', borderRadius: '20px', padding: isMobile ? '15px' : '25px', textAlign: 'center',
               border: '1px solid rgba(255, 255, 255, 0.2)', boxShadow: '0 4px 20px rgba(0, 0, 0, 0.1)', transition: 'transform 0.2s ease, box-shadow 0.2s ease', cursor: 'pointer'
             }}
             onClick={() => handleMetricClick(item.key)}
@@ -647,8 +658,8 @@ const ScoreDashboard = React.memo(({ scores, game, externalOpenPreview = 0, onPr
             onMouseEnter={(e) => { e.currentTarget.style.transform = 'translateY(-2px)'; e.currentTarget.style.boxShadow = '0 8px 25px rgba(0, 0, 0, 0.15)'; }}
             onMouseLeave={(e) => { e.currentTarget.style.transform = 'translateY(0)'; e.currentTarget.style.boxShadow = '0 4px 20px rgba(0, 0, 0, 0.1)'; }}
           >
-            <h3 style={{ margin: '0 0 8px 0', color: '#fff', fontSize: '1.1rem', fontWeight: 500 }}>{item.label}</h3>
-            <div style={{ fontSize: '2.8rem', fontWeight: 'bold', color: item.color, textShadow: '0 0 5px rgba(255, 255, 255, 0.2)', marginBottom: 10 }}>
+            <h3 style={{ margin: '0 0 8px 0', color: '#fff', fontSize: isMobile ? '0.9rem' : '1.1rem', fontWeight: 500 }}>{item.label}</h3>
+            <div style={{ fontSize: isMobile ? '2rem' : '2.8rem', fontWeight: 'bold', color: item.color, textShadow: '0 0 5px rgba(255, 255, 255, 0.2)', marginBottom: 10 }}>
               {item.value ?? '—'}{typeof item.value === 'number' ? '%' : ''}
             </div>
             <div style={{ width: '100%', height: 8, background: 'rgba(255, 255, 255, 0.2)', borderRadius: 4, overflow: 'hidden' }}>
@@ -687,7 +698,7 @@ const ScoreDashboard = React.memo(({ scores, game, externalOpenPreview = 0, onPr
       </div>
 
       {/* Informational panels */}
-      <div ref={cardsContainerRef} onKeyDown={handleContainerArrowNav} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '25px', marginBottom: '30px' }}>
+      <div ref={cardsContainerRef} onKeyDown={handleContainerArrowNav} style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : 'repeat(auto-fit, minmax(300px, 1fr))', gap: isMobile ? '15px' : '25px', marginBottom: isMobile ? '20px' : '30px' }}>
         <div onClick={() => handleMetricClick('reviews_score')} title={getReasoning('reviews_score').short || 'View reviews details'} style={{ background: 'rgba(255,255,255,0.12)', padding: 20, borderRadius: 18, border: '1px solid rgba(255,255,255,0.25)', cursor: 'pointer' }} role="button" tabIndex={0} data-nav="cards" onKeyDown={(e) => activateOnKey(e, () => handleMetricClick('reviews_score'))}>
           <h4 style={{ margin: '0 0 10px 0', color: '#fff' }}>Reviews (Informational)</h4>
           <p style={{ margin: 0, color: '#eee', fontSize: '0.9rem' }}>Metacritic: {scores.reviews_score ?? 'N/A'}/100 (Not weighted).</p>
@@ -730,11 +741,11 @@ const ScoreDashboard = React.memo(({ scores, game, externalOpenPreview = 0, onPr
       </div>
 
       {/* Overall score highlight */}
-      <div onClick={() => handleMetricClick('overall_score')} title={getReasoning('overall_score').short} style={{ background: 'rgba(255, 255, 255, 0.15)', borderRadius: 25, padding: 30, textAlign: 'center', border: '1px solid rgba(255, 255, 255, 0.3)', boxShadow: '0 4px 20px rgba(0, 0, 0, 0.1)', position: 'relative', overflow: 'hidden', cursor: 'pointer' }}>
-        <h3 style={{ margin: '0 0 20px 0', color: '#fff', fontSize: '2rem', fontWeight: 300, position: 'relative', zIndex: 1 }}>Overall Quality Score</h3>
-        <div style={{ fontSize: '5rem', fontWeight: 'bold', color: '#fff', textShadow: '0 0 10px rgba(255, 255, 255, 0.3)', position: 'relative', zIndex: 1 }}>{scores.overall_score}%</div>
-        <div style={{ width: 200, height: 200, margin: '20px auto 0', borderRadius: '50%', background: `conic-gradient(${overallScoreColor} ${scores.overall_score}%, rgba(255, 255, 255, 0.1) ${scores.overall_score}%)`, position: 'relative', zIndex: 1, boxShadow: '0 0 15px rgba(255, 255, 255, 0.1)' }}>
-          <div style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', width: 160, height: 160, borderRadius: '50%', background: 'rgba(255, 255, 255, 0.1)' }} />
+      <div onClick={() => handleMetricClick('overall_score')} title={getReasoning('overall_score').short} style={{ background: 'rgba(255, 255, 255, 0.15)', borderRadius: 25, padding: isMobile ? '20px' : 30, textAlign: 'center', border: '1px solid rgba(255, 255, 255, 0.3)', boxShadow: '0 4px 20px rgba(0, 0, 0, 0.1)', position: 'relative', overflow: 'hidden', cursor: 'pointer' }}>
+        <h3 style={{ margin: '0 0 20px 0', color: '#fff', fontSize: isMobile ? '1.5rem' : '2rem', fontWeight: 300, position: 'relative', zIndex: 1 }}>Overall Quality Score</h3>
+        <div style={{ fontSize: isMobile ? '3.5rem' : '5rem', fontWeight: 'bold', color: '#fff', textShadow: '0 0 10px rgba(255, 255, 255, 0.3)', position: 'relative', zIndex: 1 }}>{scores.overall_score}%</div>
+        <div style={{ width: isMobile ? 150 : 200, height: isMobile ? 150 : 200, margin: '20px auto 0', borderRadius: '50%', background: `conic-gradient(${overallScoreColor} ${scores.overall_score}%, rgba(255, 255, 255, 0.1) ${scores.overall_score}%)`, position: 'relative', zIndex: 1, boxShadow: '0 0 15px rgba(255, 255, 255, 0.1)' }}>
+          <div style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', width: isMobile ? 120 : 160, height: isMobile ? 120 : 160, borderRadius: '50%', background: 'rgba(255, 255, 255, 0.1)' }} />
         </div>
       </div>
 
@@ -897,9 +908,9 @@ const ScoreDashboard = React.memo(({ scores, game, externalOpenPreview = 0, onPr
                     </div>
                     {/* Increase margin and gap for the QR/details row */}
                     <div style={{ marginTop: 16, display: 'grid', gridTemplateColumns: 'auto 1fr', alignItems: 'center', gap: 18 }}>
-                      <img src={`https://api.qrserver.com/v1/create-qr-code/?size=160x160&data=${encodeURIComponent(detailsUrl)}`} alt="QR code to game JSON data" style={{ width: 120, height: 120, borderRadius: 8, border: '1px solid #e5e7eb' }} />
+                      <img src={`https://api.qrserver.com/v1/create-qr-code/?size=160x160&data=${encodeURIComponent(detailsUrl)}`} alt="QR code to game details" style={{ width: 120, height: 120, borderRadius: 8, border: '1px solid #e5e7eb' }} />
                       <div style={{ fontSize: '0.9rem', color: '#374151' }}>
-                        <div style={{ fontWeight: 600, marginBottom: 6 }}>Scan for game JSON data</div>
+                        <div style={{ fontWeight: 600, marginBottom: 6 }}>Scan for database details</div>
                         <div style={{ wordBreak: 'break-all', color: '#111827' }}>{detailsUrl}</div>
                         {(() => {
                           const isLocal = typeof window !== 'undefined' && /localhost|127\.0\.0\.1/.test(window.location.hostname);

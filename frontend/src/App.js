@@ -12,25 +12,31 @@ import './App.css';
 const SearchBar = lazy(() => import('./components/SearchBar'));
 const ScoreDashboard = lazy(() => import('./components/ScoreDashboard'));
 
-const Toolbar = ({ hideVariants, setHideVariants }) => {
+const Toolbar = ({ inline = false }) => {
   const { aiFeedbackEnabled, setAIFeedbackEnabled } = useAISettings();
+  const [isMobile, setIsMobile] = useState(typeof window !== 'undefined' ? window.innerWidth < 768 : false);
+  
+  useEffect(() => {
+    const handleResize = () => {
+      setIsMobile(window.innerWidth < 768);
+    };
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, []);
+  
   return (
-    <div style={{ display: 'flex', justifyContent: 'center', marginBottom: 12 }}>
-      <div style={{ display: 'inline-flex', alignItems: 'center', gap: 16 }}>
-        <div style={{ color: '#fff', background: 'rgba(255,255,255,0.12)', padding: '6px 10px', borderRadius: 10, border: '1px solid rgba(255,255,255,0.2)', display: 'inline-flex', alignItems: 'center', gap: 10 }}>
+    <div style={{ 
+      display: inline ? 'inline-flex' : 'flex', 
+      justifyContent: inline ? 'flex-start' : 'center', 
+      marginBottom: inline ? 0 : (isMobile ? 8 : 12) 
+    }}>
+      <div style={{ display: 'inline-flex', alignItems: 'center', gap: isMobile ? 8 : 16 }}>
+        <div style={{ color: '#fff', background: 'rgba(255,255,255,0.12)', padding: isMobile ? '4px 8px' : '6px 10px', borderRadius: 10, border: '1px solid rgba(255,255,255,0.2)', display: 'inline-flex', alignItems: 'center', gap: isMobile ? 8 : 10 }}>
           <Switch
             checked={aiFeedbackEnabled}
             onChange={setAIFeedbackEnabled}
             label="Show AI feedback"
-            size="md"
-          />
-        </div>
-        <div style={{ color: '#fff', background: 'rgba(255,255,255,0.12)', padding: '6px 10px', borderRadius: 10, border: '1px solid rgba(255,255,255,0.2)', display: 'inline-flex', alignItems: 'center', gap: 10 }}>
-          <Switch
-            checked={hideVariants}
-            onChange={setHideVariants}
-            label="Hide DLC/editions/spinoffs"
-            size="md"
+            size={isMobile ? "sm" : "md"}
           />
         </div>
       </div>
@@ -73,9 +79,14 @@ const AppInner = React.memo(() => {
   // Parallax state
   const [scrollY, setScrollY] = useState(0);
   const [viewportH, setViewportH] = useState(typeof window !== 'undefined' ? window.innerHeight : 0);
+  const [viewportW, setViewportW] = useState(typeof window !== 'undefined' ? window.innerWidth : 0);
   const [reduceMotion, setReduceMotion] = useState(false);
   const [docH, setDocH] = useState(typeof document !== 'undefined' ? (document.documentElement?.scrollHeight || document.body?.scrollHeight || 0) : 0);
   const { reduceMotion: reduceMotionSetting, fontSize, theme } = useAccessibilitySettings?.() || { reduceMotion: false, fontSize: 'medium', theme: 'dark' };
+  
+  // Responsive breakpoints
+  const isMobile = viewportW < 768;
+  const isSmallMobile = viewportW < 480;
 
   // Color interpolation helpers
   const hexToRgb = useCallback((hex) => {
@@ -105,6 +116,7 @@ const AppInner = React.memo(() => {
       }
       const onResize = () => {
         setViewportH(window.innerHeight || 0);
+        setViewportW(window.innerWidth || 0);
         setDocH(document.documentElement?.scrollHeight || document.body?.scrollHeight || 0);
       };
       window.addEventListener('resize', onResize, { passive: true });
@@ -163,7 +175,8 @@ const AppInner = React.memo(() => {
     setLoading(true);
     try { sfx.unlock(); sfx.scanStart(); } catch {}
     try {
-      const response = await axios.post(`http://localhost:8000/api/games/${game.id}/scan`);
+      const apiBase = process.env.REACT_APP_API_BASE || 'http://localhost:8000/api';
+      const response = await axios.post(`${apiBase}/games/${game.id}/scan`);
       setScores(response.data.scores);
       try { sfx.scanDone(); sfx.scoreReveal(); } catch {}
     } catch (error) {
@@ -177,14 +190,14 @@ const AppInner = React.memo(() => {
       minHeight: '100vh',
       background: `linear-gradient(135deg, ${leftColor} 0%, ${rightColor} 100%)`,
       color: isLight ? '#0f172a' : '#fff',
-      padding: '20px',
+      padding: isMobile ? '10px' : '20px',
       position: 'relative',
       overflow: 'hidden',
       fontSize: `${fontScale}rem`
     }} data-theme={isLight ? 'light' : 'dark'}>
       {/* Settings shortcut */}
-      <div style={{ position: 'fixed', top: 12, right: 12, zIndex: 50 }}>
-        <button onClick={() => setSettingsOpen(true)} aria-label="Open settings" style={{ background: 'rgba(255,255,255,0.2)', border: '1px solid rgba(255,255,255,0.35)', color: '#fff', padding: '8px 12px', borderRadius: 10, cursor: 'pointer', backdropFilter: 'blur(4px)' }}>
+      <div style={{ position: 'fixed', top: isMobile ? 8 : 12, right: isMobile ? 8 : 12, zIndex: 50 }}>
+        <button onClick={() => setSettingsOpen(true)} aria-label="Open settings" style={{ background: 'rgba(255,255,255,0.2)', border: '1px solid rgba(255,255,255,0.35)', color: '#fff', padding: isMobile ? '6px 10px' : '8px 12px', borderRadius: 10, cursor: 'pointer', backdropFilter: 'blur(4px)', fontSize: isMobile ? '14px' : '16px' }}>
           Settings
         </button>
       </div>
@@ -193,9 +206,9 @@ const AppInner = React.memo(() => {
       <div style={{
         position: 'absolute',
   top: `${Math.round((viewportH * 0.10) + (motionOff ? 0 : scrollY * 0.15))}px`,
-        left: '10%',
-        width: '150px',
-        height: '150px',
+        left: isMobile ? '5%' : '10%',
+        width: isMobile ? (isSmallMobile ? '80px' : '100px') : '150px',
+        height: isMobile ? (isSmallMobile ? '80px' : '100px') : '150px',
         background: 'rgba(255, 255, 255, 0.08)',
         borderRadius: '50%',
         border: '1px solid rgba(255, 255, 255, 0.15)',
@@ -233,8 +246,8 @@ const AppInner = React.memo(() => {
             src={selectedGame.cover_image}
             alt={`${selectedGame.title} cover`}
             style={{
-              width: 56,
-              height: 56,
+              width: isMobile ? (isSmallMobile ? 32 : 40) : 56,
+              height: isMobile ? (isSmallMobile ? 32 : 40) : 56,
               borderRadius: 10,
               objectFit: 'cover',
               border: '1px solid rgba(255, 255, 255, 0.5)',
@@ -251,9 +264,9 @@ const AppInner = React.memo(() => {
       <div style={{
         position: 'absolute',
   bottom: `${Math.round((viewportH * 0.20) - (motionOff ? 0 : scrollY * 0.10))}px`,
-        left: '70%',
-        width: '120px',
-        height: '120px',
+        left: isMobile ? '75%' : '70%',
+        width: isMobile ? (isSmallMobile ? '60px' : '80px') : '120px',
+        height: isMobile ? (isSmallMobile ? '60px' : '80px') : '120px',
         background: 'rgba(255, 255, 255, 0.06)',
         borderRadius: '50%',
         border: '1px solid rgba(255, 255, 255, 0.12)',
@@ -265,8 +278,8 @@ const AppInner = React.memo(() => {
             src={selectedGame.cover_image}
             alt={`${selectedGame.title} cover`}
             style={{
-              width: 44,
-              height: 44,
+              width: isMobile ? (isSmallMobile ? 24 : 32) : 44,
+              height: isMobile ? (isSmallMobile ? 24 : 32) : 44,
               borderRadius: 8,
               objectFit: 'cover',
               border: '1px solid rgba(255, 255, 255, 0.5)',
@@ -285,17 +298,18 @@ const AppInner = React.memo(() => {
         position: 'relative',
         zIndex: 10,
         maxWidth: '1200px',
-        margin: '0 auto'
+        margin: '0 auto',
+        padding: isMobile ? '0 10px' : '0'
       }}>
         <h1 style={{
           color: isLight ? '#0f172a' : '#fff',
           textAlign: 'center',
-          marginBottom: '30px',
-          fontSize: '3rem',
+          marginBottom: isMobile ? '20px' : '30px',
+          fontSize: isMobile ? (isSmallMobile ? '1.5rem' : '2rem') : '3rem',
           fontWeight: '300',
           textShadow: isLight ? 'none' : '0 0 20px rgba(255, 255, 255, 0.5)',
           background: isLight ? 'rgba(255,255,255,0.6)' : 'rgba(255, 255, 255, 0.1)',
-          padding: '20px',
+          padding: isMobile ? (isSmallMobile ? '12px' : '15px') : '20px',
           borderRadius: '20px',
           border: isLight ? '1px solid rgba(0,0,0,0.08)' : '1px solid rgba(255, 255, 255, 0.2)',
           display: 'inline-block'
@@ -306,6 +320,9 @@ const AppInner = React.memo(() => {
         <div style={{
           display: 'flex',
           justifyContent: 'center',
+          alignItems: 'center',
+          flexWrap: isMobile ? 'wrap' : 'nowrap',
+          gap: isMobile ? '12px' : '75px',
           marginBottom: '16px'
         }}>
           <Suspense fallback={
@@ -320,10 +337,11 @@ const AppInner = React.memo(() => {
           }>
             <SearchBar onGameSelect={handleGameSelect} hideVariants={hideVariants} onChangeHideVariants={setHideVariants} />
           </Suspense>
+          {!isMobile && <Toolbar inline={true} />}
         </div>
 
-        {/* AI feedback toggle moved below search bar */}
-  <Toolbar hideVariants={hideVariants} setHideVariants={setHideVariants} />
+        {/* AI feedback toggle for mobile - shown below search bar */}
+        {isMobile && <Toolbar inline={false} />}
 
         {loading && (
           <div style={{
