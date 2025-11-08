@@ -5,6 +5,12 @@ body {
     sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
+  /* Hide direct text nodes (like stray "0") */
+  font-size: 0;
+}
+
+body > * {
+  font-size: 1rem;
 }
 
 code {

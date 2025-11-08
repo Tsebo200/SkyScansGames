@@ -175,7 +175,7 @@ const AppInner = React.memo(() => {
     setLoading(true);
     try { sfx.unlock(); sfx.scanStart(); } catch {}
     try {
-      const apiBase = process.env.REACT_APP_API_BASE || 'http://localhost:8000/api';
+      const apiBase = process.env.REACT_APP_API_BASE || (process.env.NODE_ENV === 'production' ? '/api' : 'http://localhost:8000/api');
       const response = await axios.post(`${apiBase}/games/${game.id}/scan`);
       setScores(response.data.scores);
       try { sfx.scanDone(); sfx.scoreReveal(); } catch {}
@@ -190,14 +190,27 @@ const AppInner = React.memo(() => {
       minHeight: '100vh',
       background: `linear-gradient(135deg, ${leftColor} 0%, ${rightColor} 100%)`,
       color: isLight ? '#0f172a' : '#fff',
-      padding: isMobile ? '10px' : '20px',
+      padding: isMobile ? (isSmallMobile ? '8px' : '10px') : '20px',
       position: 'relative',
       overflow: 'hidden',
-      fontSize: `${fontScale}rem`
+      fontSize: `${fontScale}rem`,
+      width: '100%',
+      boxSizing: 'border-box'
     }} data-theme={isLight ? 'light' : 'dark'}>
       {/* Settings shortcut */}
       <div style={{ position: 'fixed', top: isMobile ? 8 : 12, right: isMobile ? 8 : 12, zIndex: 50 }}>
-        <button onClick={() => setSettingsOpen(true)} aria-label="Open settings" style={{ background: 'rgba(255,255,255,0.2)', border: '1px solid rgba(255,255,255,0.35)', color: '#fff', padding: isMobile ? '6px 10px' : '8px 12px', borderRadius: 10, cursor: 'pointer', backdropFilter: 'blur(4px)', fontSize: isMobile ? '14px' : '16px' }}>
+        <button onClick={() => setSettingsOpen(true)} aria-label="Open settings" style={{ 
+          background: isLight ? 'rgba(0,0,0,0.1)' : 'rgba(255,255,255,0.2)', 
+          border: isLight ? '1px solid rgba(0,0,0,0.2)' : '1px solid rgba(255,255,255,0.35)', 
+          color: isLight ? '#0f172a' : '#fff', 
+          padding: isMobile ? '6px 10px' : '8px 12px', 
+          borderRadius: 10, 
+          cursor: 'pointer', 
+          backdropFilter: 'blur(4px)', 
+          fontSize: isMobile ? '14px' : '16px',
+          fontWeight: 500,
+          textShadow: isLight ? 'none' : '0 1px 2px rgba(0,0,0,0.3)'
+        }}>
           Settings
         </button>
       </div>
@@ -299,7 +312,9 @@ const AppInner = React.memo(() => {
         zIndex: 10,
         maxWidth: '1200px',
         margin: '0 auto',
-        padding: isMobile ? '0 10px' : '0'
+        padding: isMobile ? (isSmallMobile ? '0 8px' : '0 12px') : '0',
+        width: '100%',
+        boxSizing: 'border-box'
       }}>
         <h1 style={{
           color: isLight ? '#0f172a' : '#fff',
@@ -309,10 +324,13 @@ const AppInner = React.memo(() => {
           fontWeight: '300',
           textShadow: isLight ? 'none' : '0 0 20px rgba(255, 255, 255, 0.5)',
           background: isLight ? 'rgba(255,255,255,0.6)' : 'rgba(255, 255, 255, 0.1)',
-          padding: isMobile ? (isSmallMobile ? '12px' : '15px') : '20px',
+          padding: isMobile ? (isSmallMobile ? '12px 8px' : '15px 12px') : '20px',
           borderRadius: '20px',
           border: isLight ? '1px solid rgba(0,0,0,0.08)' : '1px solid rgba(255, 255, 255, 0.2)',
-          display: 'inline-block'
+          display: 'inline-block',
+          width: isMobile ? '100%' : 'auto',
+          maxWidth: '100%',
+          boxSizing: 'border-box'
         }}>
           SkyScansGames
         </h1>
@@ -323,7 +341,9 @@ const AppInner = React.memo(() => {
           alignItems: 'center',
           flexWrap: isMobile ? 'wrap' : 'nowrap',
           gap: isMobile ? '12px' : '75px',
-          marginBottom: '16px'
+          marginBottom: '16px',
+          width: '100%',
+          boxSizing: 'border-box'
         }}>
           <Suspense fallback={
             <div style={{

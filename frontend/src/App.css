@@ -1,3 +1,13 @@
+.App {
+  position: relative;
+  /* Hide direct text nodes (like stray "0") */
+  font-size: 0;
+}
+
+.App > * {
+  font-size: 1rem;
+}
+
 @keyframes float {
   0%, 100% { transform: translateY(0px); }
   50% { transform: translateY(-20px); }

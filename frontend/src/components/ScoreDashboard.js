@@ -75,7 +75,8 @@ const ScoreDashboard = React.memo(({ scores, game, externalOpenPreview = 0, onPr
       setRawgLoading(true);
       setRawgError(null);
       try {
-        const resp = await fetch(`/api/games/${game.id}/rawg-details`);
+        const apiBase = process.env.REACT_APP_API_BASE || (process.env.NODE_ENV === 'production' ? '/api' : 'http://localhost:8000/api');
+        const resp = await fetch(`${apiBase}/games/${game.id}/rawg-details`);
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
         const data = await resp.json();
         if (cancelled) return;
@@ -263,10 +264,16 @@ const ScoreDashboard = React.memo(({ scores, game, externalOpenPreview = 0, onPr
   // Details URL (for QR)
   const detailsUrl = useMemo(() => {
     try {
-      const origin = window?.location?.origin || '';
-      return `${origin}/api/games/${game.id}`;
+      const apiBase = process.env.REACT_APP_API_BASE || (process.env.NODE_ENV === 'production' ? '/api' : 'http://localhost:8000/api');
+      // For QR code, use absolute URL if in production, relative if local
+      if (process.env.NODE_ENV === 'production') {
+        const origin = window?.location?.origin || '';
+        return `${origin}${apiBase}/games/${game.id}`;
+      }
+      return `${apiBase}/games/${game.id}`;
     } catch {
-      return `/api/games/${game.id}`;
+      const apiBase = process.env.REACT_APP_API_BASE || '/api';
+      return `${apiBase}/games/${game.id}`;
     }
   }, [game.id]);
 
@@ -341,7 +348,8 @@ const ScoreDashboard = React.memo(({ scores, game, externalOpenPreview = 0, onPr
   const fetchTelemetry = useCallback(async (force = false) => {
     setTelemetryLoading(true); setTelemetryError(null);
     try {
-      const resp = await fetch(`/api/games/${game.id}/community-telemetry${force ? '?force=true' : ''}`);
+      const apiBase = process.env.REACT_APP_API_BASE || (process.env.NODE_ENV === 'production' ? '/api' : 'http://localhost:8000/api');
+      const resp = await fetch(`${apiBase}/games/${game.id}/community-telemetry${force ? '?force=true' : ''}`);
       if (!resp.ok) throw new Error('Failed to load telemetry');
       const data = await resp.json();
       setTelemetry(data.telemetry);
@@ -382,7 +390,8 @@ const ScoreDashboard = React.memo(({ scores, game, externalOpenPreview = 0, onPr
     let cancelled = false;
     (async () => {
       try {
-        const resp = await fetch(`/api/games/${game.id}/life-support`);
+        const apiBase = process.env.REACT_APP_API_BASE || (process.env.NODE_ENV === 'production' ? '/api' : 'http://localhost:8000/api');
+        const resp = await fetch(`${apiBase}/games/${game.id}/life-support`);
         if (!resp.ok) throw new Error('life support fetch failed');
         const data = await resp.json();
         if (cancelled) return;
@@ -844,7 +853,19 @@ const ScoreDashboard = React.memo(({ scores, game, externalOpenPreview = 0, onPr
                     {/* Add more row spacing inside the overview card */}
                     <div style={{ display: 'grid', gap: isMobile ? 12 : 16 }}>
                       <div style={{ display: 'flex', flexWrap: 'wrap', gap: isMobile ? 8 : 12, color: '#333' }}>
-                        {game.release_year && <span style={{ padding: isMobile ? '5px 8px' : '6px 10px', background: '#eef2ff', borderRadius: 8, border: '1px solid #dbe4ff', fontSize: isMobile ? '0.85rem' : '0.9rem' }}>Year: <strong>{game.release_year}</strong></span>}
+                        {(() => {
+                          // Extract year from release_year or release_date
+                          let displayYear = game.release_year;
+                          if (!displayYear && game.release_date) {
+                            try {
+                              const yearMatch = game.release_date.match(/^(\d{4})/);
+                              if (yearMatch) displayYear = parseInt(yearMatch[1], 10);
+                            } catch {}
+                          }
+                          return displayYear ? (
+                            <span style={{ padding: isMobile ? '5px 8px' : '6px 10px', background: '#eef2ff', borderRadius: 8, border: '1px solid #dbe4ff', fontSize: isMobile ? '0.85rem' : '0.9rem' }}>Year: <strong>{displayYear}</strong></span>
+                          ) : null;
+                        })()}
                         {game.release_date && <span style={{ padding: isMobile ? '5px 8px' : '6px 10px', background: '#f0f9ff', borderRadius: 8, border: '1px solid #cff0ff', fontSize: isMobile ? '0.85rem' : '0.9rem' }}>Released: <strong>{game.release_date}</strong></span>}
                         {rawgDetails?.age_rating && (
                           <span style={{ padding: isMobile ? '5px 8px' : '6px 10px', background: '#fef3c7', borderRadius: 8, border: '1px solid #fde68a', fontSize: isMobile ? '0.85rem' : '0.9rem' }}>Age Rating: <strong>{rawgDetails.age_rating}</strong></span>

@@ -54,7 +54,7 @@ const SearchBar = React.memo(({ onGameSelect, hideVariants: hideVariantsProp, on
         return;
       }
       setLoading(true);
-      const apiBase = process.env.REACT_APP_API_BASE || 'http://localhost:8000/api';
+      const apiBase = process.env.REACT_APP_API_BASE || (process.env.NODE_ENV === 'production' ? '/api' : 'http://localhost:8000/api');
       axios.get(`${apiBase}/games/search`, { params: { q } })
         .then(response => {
           let data = Array.isArray(response.data) ? response.data : [];
@@ -254,7 +254,7 @@ const SearchBar = React.memo(({ onGameSelect, hideVariants: hideVariantsProp, on
   }), [results, handleSelect, activeIndex, isMobile]);
 
   return (
-    <div style={{ position: 'relative', width: '100%', maxWidth: isMobile ? '100%' : '500px' }}>
+    <div style={{ position: 'relative', width: '100%', maxWidth: isMobile ? '100%' : '500px', boxSizing: 'border-box' }}>
       <style>
         {`input::placeholder { color: white; }`}
       </style>
@@ -277,6 +277,7 @@ const SearchBar = React.memo(({ onGameSelect, hideVariants: hideVariantsProp, on
             borderRadius: '25px',
             border: '1px solid rgba(255, 255, 255, 0.2)',
             background: 'rgba(255, 255, 255, 0.15)',
+            boxSizing: 'border-box',
             color: '#fff',
             fontSize: isMobile ? '14px' : '16px',
             outline: 'none',
