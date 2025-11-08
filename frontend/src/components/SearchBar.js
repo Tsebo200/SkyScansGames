@@ -134,18 +134,30 @@ const SearchBar = React.memo(({ onGameSelect, hideVariants: hideVariantsProp, on
     if (!results || results.length === 0) return;
     if (e.key === 'ArrowDown') {
       e.preventDefault();
-      setActiveIndex((idx) => (idx + 1) % results.length);
+      setActiveIndex((idx) => {
+        if (idx < 0) return 0; // Start at first item if no selection
+        return (idx + 1) % results.length;
+      });
     } else if (e.key === 'ArrowUp') {
       e.preventDefault();
-      setActiveIndex((idx) => (idx <= 0 ? results.length - 1 : idx - 1));
+      setActiveIndex((idx) => {
+        if (idx <= 0) return results.length - 1; // Wrap to last item
+        return idx - 1;
+      });
     } else if (e.key === 'Enter') {
       if (activeIndex >= 0 && activeIndex < results.length) {
         e.preventDefault();
         handleSelect(results[activeIndex]);
+      } else if (results.length > 0) {
+        // If no selection but results exist, select first item
+        e.preventDefault();
+        handleSelect(results[0]);
       }
     } else if (e.key === 'Escape') {
+      e.preventDefault();
       setResults([]);
       setActiveIndex(-1);
+      setQuery('');
     }
   }, [results, activeIndex, handleSelect]);
 
