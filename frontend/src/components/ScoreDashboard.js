@@ -852,11 +852,27 @@ const ScoreDashboard = React.memo(({ scores, game, externalOpenPreview = 0, onPr
                   <div style={tabCardStyle}>
                     {/* Add more row spacing inside the overview card */}
                     <div style={{ display: 'grid', gap: 16 }}>
-                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12, color: '#333' }}>
-                        {game.release_year && <span style={{ padding: '6px 10px', background: '#eef2ff', borderRadius: 8, border: '1px solid #dbe4ff' }}>Year: <strong>{game.release_year}</strong></span>}
-                        {game.release_date && <span style={{ padding: '6px 10px', background: '#f0f9ff', borderRadius: 8, border: '1px solid #cff0ff' }}>Released: <strong>{game.release_date}</strong></span>}
+                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: isMobile ? 8 : 12, color: '#333' }}>
+                        {(() => {
+                          // Extract year from release_year or release_date
+                          let displayYear = game.release_year;
+                          if (!displayYear && game.release_date) {
+                            try {
+                              const yearMatch = String(game.release_date).match(/^(\d{4})/);
+                              if (yearMatch) displayYear = parseInt(yearMatch[1], 10);
+                            } catch {}
+                          }
+                          // Debug logging
+                          if (process.env.NODE_ENV === 'development') {
+                            console.log('Game data:', { release_year: game.release_year, release_date: game.release_date, displayYear, age_rating: rawgDetails?.age_rating });
+                          }
+                          return displayYear ? (
+                            <span style={{ padding: isMobile ? '5px 8px' : '6px 10px', background: '#eef2ff', borderRadius: 8, border: '1px solid #dbe4ff', fontSize: isMobile ? '0.85rem' : '0.9rem', color: '#333' }}>Year: <strong>{displayYear}</strong></span>
+                          ) : null;
+                        })()}
+                        {game.release_date && <span style={{ padding: isMobile ? '5px 8px' : '6px 10px', background: '#f0f9ff', borderRadius: 8, border: '1px solid #cff0ff', fontSize: isMobile ? '0.85rem' : '0.9rem', color: '#333' }}>Released: <strong>{game.release_date}</strong></span>}
                         {rawgDetails?.age_rating && (
-                          <span style={{ padding: '6px 10px', background: '#fef3c7', borderRadius: 8, border: '1px solid #fde68a' }}>Age Rating: <strong>{rawgDetails.age_rating}</strong></span>
+                          <span style={{ padding: isMobile ? '5px 8px' : '6px 10px', background: '#fef3c7', borderRadius: 8, border: '1px solid #fde68a', fontSize: isMobile ? '0.85rem' : '0.9rem', color: '#333' }}>Age Rating: <strong>{rawgDetails.age_rating}</strong></span>
                         )}
                       </div>
                       {(() => {

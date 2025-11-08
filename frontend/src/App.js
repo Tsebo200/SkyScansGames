@@ -180,10 +180,20 @@ const AppInner = React.memo(() => {
       setScores(response.data.scores);
       
       // Fetch updated game object with release_year and release_date from database
+      // Merge with existing game object to preserve all fields (like cover_image, title, etc.)
       try {
         const gameResponse = await axios.get(`${apiBase}/games/${game.id}`);
         if (gameResponse.data) {
-          setSelectedGame(gameResponse.data);
+          // Merge updated fields with existing game object to preserve all data
+          setSelectedGame(prevGame => ({
+            ...prevGame,
+            ...gameResponse.data,
+            // Preserve important fields that might be missing in API response
+            cover_image: gameResponse.data.cover_image || prevGame?.cover_image,
+            title: gameResponse.data.title || prevGame?.title,
+            platforms: gameResponse.data.platforms || prevGame?.platforms,
+            rawg_id: gameResponse.data.rawg_id || prevGame?.rawg_id
+          }));
         }
       } catch (gameError) {
         console.warn('Could not fetch updated game object:', gameError);
