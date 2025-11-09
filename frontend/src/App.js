@@ -393,6 +393,39 @@ const AppInner = React.memo(() => {
           SkyScansGames
         </h1>
 
+        {/* Welcome message */}
+        <div style={{
+          textAlign: 'center',
+          marginBottom: isMobile ? '20px' : '30px',
+          padding: isMobile ? '15px 12px' : '20px 30px',
+          background: isLight ? 'rgba(255,255,255,0.7)' : 'rgba(255, 255, 255, 0.12)',
+          borderRadius: '16px',
+          border: isLight ? '1px solid rgba(0,0,0,0.08)' : '1px solid rgba(255, 255, 255, 0.2)',
+          maxWidth: '800px',
+          margin: '0 auto',
+          marginBottom: isMobile ? '20px' : '30px',
+          boxSizing: 'border-box'
+        }}>
+          <h2 style={{
+            margin: '0 0 12px 0',
+            color: isLight ? '#0f172a' : '#fff',
+            fontSize: isMobile ? '1.2rem' : '1.5rem',
+            fontWeight: 600,
+            fontFamily: 'inherit'
+          }}>
+            Welcome to SkyScansGames
+          </h2>
+          <p style={{
+            margin: 0,
+            color: isLight ? '#475569' : 'rgba(255, 255, 255, 0.9)',
+            fontSize: isMobile ? '0.9rem' : '1rem',
+            lineHeight: 1.6,
+            fontFamily: 'inherit'
+          }}>
+            Discover and analyze video games with AI-powered insights. Search for any game to get comprehensive quality scores based on gameplay, story, presentation, technical performance, and more. Our intelligent scoring system evaluates games across seven key dimensions to help you make informed decisions about your next gaming experience.
+          </p>
+        </div>
+
         <div style={{
           display: 'flex',
           justifyContent: 'center',
