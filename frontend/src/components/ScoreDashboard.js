@@ -663,26 +663,6 @@ const ScoreDashboard = React.memo(({ scores, game, externalOpenPreview = 0, onPr
         {game.title} - Quality Analysis
       </h2>
 
-      {/* Life Support Badge */}
-      <div style={{ display: 'flex', justifyContent: 'center', marginBottom: '25px' }}>
-        <div
-          onClick={() => handleMetricClick('life_support')}
-          title={lifeSupportLabel}
-          style={{
-            background: 'rgba(255,255,255,0.1)', border: `1px solid ${lifeSupportColor}55`, padding: '10px 18px', borderRadius: '999px',
-            cursor: 'pointer', display: 'inline-flex', alignItems: 'center', gap: '10px', boxShadow: '0 2px 10px rgba(0,0,0,0.25)', backdropFilter: 'blur(4px)'
-          }}
-        >
-          <span style={{ width: 14, height: 14, borderRadius: '50%', background: lifeSupportColor, boxShadow: `0 0 6px ${lifeSupportColor}cc` }} />
-          <span style={{ color: '#fff', fontSize: '0.95rem', fontWeight: 500 }}>Life Support: {lifeSupportLabel}</span>
-          {lifeSupport.notes && (
-            <span style={{ color: '#ddd', fontSize: '0.75rem', fontStyle: 'italic', maxWidth: 260, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-              {lifeSupport.notes}
-            </span>
-          )}
-        </div>
-      </div>
-
       {/* Metric tiles */}
       <div ref={cardsContainerRef} onKeyDown={handleContainerArrowNav} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))', gap: '25px', marginBottom: '30px' }}>
         {rubricItems.map((item, index) => (
