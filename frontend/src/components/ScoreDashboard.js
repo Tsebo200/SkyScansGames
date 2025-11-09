@@ -389,12 +389,13 @@ const ScoreDashboard = React.memo(({ scores, game, externalOpenPreview = 0, onPr
     let cancelled = false;
     (async () => {
       try {
-        const resp = await fetch(`/api/games/${game.id}/life-support`);
+        const apiBase = process.env.REACT_APP_API_BASE || (process.env.NODE_ENV === 'production' ? '/api' : 'http://localhost:8000/api');
+        const resp = await fetch(`${apiBase}/games/${game.id}/life-support`);
         if (!resp.ok) throw new Error('life support fetch failed');
         const data = await resp.json();
         if (cancelled) return;
         if (data.life_support) {
-          const status = data.life_support.support_status || 'unknown';
+          const status = data.life_support.support_status || data.life_support.status || 'unknown';
           const deltaMap = { eternal: 10, active: 5, sunset: -5, offline: -10, unknown: 0 };
           setLifeSupport({
             status,
@@ -404,11 +405,24 @@ const ScoreDashboard = React.memo(({ scores, game, externalOpenPreview = 0, onPr
             last_update_date: data.life_support.last_update_date,
             next_update_hint: data.life_support.next_update_hint
           });
+        } else if (data.status) {
+          // Handle case where response is directly the status
+          const status = data.status || 'unknown';
+          const deltaMap = { eternal: 10, active: 5, sunset: -5, offline: -10, unknown: 0 };
+          setLifeSupport({
+            status,
+            delta: deltaMap[status] ?? 0,
+            loading: false,
+            notes: data.notes || null,
+            last_update_date: data.last_update_date,
+            next_update_hint: data.next_update_hint
+          });
         } else {
-          setLifeSupport(ls => ({ ...ls, loading: false }));
+          setLifeSupport(ls => ({ ...ls, loading: false, status: 'unknown' }));
         }
-      } catch {
-        if (!cancelled) setLifeSupport(ls => ({ ...ls, loading: false }));
+      } catch (error) {
+        console.warn('Life support fetch error:', error);
+        if (!cancelled) setLifeSupport(ls => ({ ...ls, loading: false, status: 'unknown' }));
       }
     })();
     return () => { cancelled = true; };
