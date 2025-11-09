@@ -398,7 +398,7 @@ const AppInner = React.memo(() => {
         {welcomeMessageVisible && (
           <div style={{
             textAlign: 'center',
-            marginBottom: isMobile ? '30px' : '40px',
+            marginBottom: '70px',
             padding: isMobile ? '15px 12px' : '20px 30px',
             paddingTop: isMobile ? '35px' : '45px',
             background: isLight ? 'rgba(255,255,255,0.7)' : 'rgba(255, 255, 255, 0.12)',
@@ -406,7 +406,7 @@ const AppInner = React.memo(() => {
             border: isLight ? '1px solid rgba(0,0,0,0.08)' : '1px solid rgba(255, 255, 255, 0.2)',
             maxWidth: '800px',
             margin: '0 auto',
-            marginBottom: isMobile ? '30px' : '40px',
+            marginBottom: '70px',
             boxSizing: 'border-box',
             position: 'relative'
           }}>
