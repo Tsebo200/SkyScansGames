@@ -369,8 +369,8 @@ const ScoreDashboard = React.memo(({ scores, game, externalOpenPreview = 0, onPr
     { label: 'Inferred Life Support (AI)', key: 'life_support_inferred' }
   ], []);
 
-  // Life support state and derivation
-  const [lifeSupport, setLifeSupport] = useState({ status: 'unknown', delta: 0, loading: true, notes: null });
+  // Life support state and derivation - checks online player status via telemetry
+  const [lifeSupport, setLifeSupport] = useState({ status: 'unknown', delta: 0, loading: true, notes: null, ccu: null });
   useEffect(() => {
     const existing = scores?.reasoning?.life_support;
     if (existing && existing.detailed) {
@@ -382,7 +382,8 @@ const ScoreDashboard = React.memo(({ scores, game, externalOpenPreview = 0, onPr
         loading: false,
         notes: d.notes || null,
         last_update_date: d.last_update_date,
-        next_update_hint: d.next_update_hint
+        next_update_hint: d.next_update_hint,
+        ccu: d.evidence?.ccu || null
       });
       return;
     }
@@ -390,6 +391,37 @@ const ScoreDashboard = React.memo(({ scores, game, externalOpenPreview = 0, onPr
     (async () => {
       try {
         const apiBase = process.env.REACT_APP_API_BASE || (process.env.NODE_ENV === 'production' ? '/api' : 'http://localhost:8000/api');
+        
+        // First, try to get inferred status from telemetry (online players)
+        let inferredResp = null;
+        try {
+          inferredResp = await fetch(`${apiBase}/games/${game.id}/life-support-inferred`);
+          if (inferredResp.ok) {
+            const inferredData = await inferredResp.json();
+            if (cancelled) return;
+            if (inferredData.life_support_inferred) {
+              const inferred = inferredData.life_support_inferred;
+              const status = inferred.inferred_status || inferred.status || 'unknown';
+              const deltaMap = { eternal: 10, active: 5, sunset: -5, offline: -10, unknown: 0 };
+              const ccu = inferred.ccu_value || inferred.evidence?.ccu || null;
+              
+              setLifeSupport({
+                status,
+                delta: deltaMap[status] ?? 0,
+                loading: false,
+                notes: ccu !== null ? `Steam CCU: ${ccu.toLocaleString()} players online` : 'Based on online player data',
+                last_update_date: null,
+                next_update_hint: null,
+                ccu
+              });
+              return; // Use inferred status if available
+            }
+          }
+        } catch (e) {
+          console.warn('Inferred life support fetch error:', e);
+        }
+        
+        // Fallback to manual life support entry
         const resp = await fetch(`${apiBase}/games/${game.id}/life-support`);
         if (!resp.ok) throw new Error('life support fetch failed');
         const data = await resp.json();
@@ -403,19 +435,8 @@ const ScoreDashboard = React.memo(({ scores, game, externalOpenPreview = 0, onPr
             loading: false,
             notes: data.life_support.notes,
             last_update_date: data.life_support.last_update_date,
-            next_update_hint: data.life_support.next_update_hint
-          });
-        } else if (data.status) {
-          // Handle case where response is directly the status
-          const status = data.status || 'unknown';
-          const deltaMap = { eternal: 10, active: 5, sunset: -5, offline: -10, unknown: 0 };
-          setLifeSupport({
-            status,
-            delta: deltaMap[status] ?? 0,
-            loading: false,
-            notes: data.notes || null,
-            last_update_date: data.last_update_date,
-            next_update_hint: data.next_update_hint
+            next_update_hint: data.life_support.next_update_hint,
+            ccu: null
           });
         } else {
           setLifeSupport(ls => ({ ...ls, loading: false, status: 'unknown' }));
@@ -759,8 +780,15 @@ const ScoreDashboard = React.memo(({ scores, game, externalOpenPreview = 0, onPr
           </div>
           <h4 style={{ margin: '0 0 10px 0', color: '#fff', paddingLeft: '85px' }}>Life Support (Informational)</h4>
           <p style={{ margin: 0, color: '#eee', fontSize: '0.9rem', paddingLeft: '85px' }}>
-            {lifeSupportLabel}{lifeSupport.last_update_date ? ` • Updated: ${lifeSupport.last_update_date}` : ''}
+            {lifeSupportLabel}
+            {lifeSupport.ccu !== null && ` • ${lifeSupport.ccu.toLocaleString()} players online`}
+            {lifeSupport.last_update_date && ` • Updated: ${lifeSupport.last_update_date}`}
           </p>
+          {lifeSupport.notes && (
+            <p style={{ margin: '6px 0 0 0', color: '#ddd', fontSize: '0.8rem', paddingLeft: '85px', fontStyle: 'italic' }}>
+              {lifeSupport.notes}
+            </p>
+          )}
         </div>
         {(localScores || scores)?.reasoning?.life_support_inferred && (
           <div onClick={() => handleMetricClick('life_support_inferred')} title={getReasoning('life_support_inferred').short || 'View inferred life support details'} style={{ background: 'rgba(255,255,255,0.12)', padding: 20, borderRadius: 18, border: '1px solid rgba(255,255,255,0.25)', cursor: 'pointer' }} role="button" tabIndex={0} data-nav="cards" onKeyDown={(e) => activateOnKey(e, () => handleMetricClick('life_support_inferred'))}>
