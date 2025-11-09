@@ -6,6 +6,7 @@ import axios from 'axios';
 import sfx from './utils/sfx';
 import Switch from './components/Switch';
 import SettingsModal from './components/SettingsModal';
+import RubricModal from './components/RubricModal';
 import './App.css';
 
 // Lazy load components for better performance
@@ -76,6 +77,7 @@ const AppInner = React.memo(() => {
   const [openPreviewTick, setOpenPreviewTick] = useState(0);
   const [pendingOpenPreview, setPendingOpenPreview] = useState(false);
   const [isPreviewOpen, setIsPreviewOpen] = useState(false);
+  const [rubricModalOpen, setRubricModalOpen] = useState(false);
   // Parallax state
   const [scrollY, setScrollY] = useState(0);
   const [viewportH, setViewportH] = useState(typeof window !== 'undefined' ? window.innerHeight : 0);
@@ -419,6 +421,41 @@ const AppInner = React.memo(() => {
         {/* AI feedback toggle for mobile - shown below search bar */}
         {isMobile && <Toolbar inline={false} />}
 
+        {/* Rubric button - shown below search bar */}
+        <div style={{ display: 'flex', justifyContent: 'center', marginTop: isMobile ? '12px' : '16px', marginBottom: '16px' }}>
+          <button 
+            onClick={() => setRubricModalOpen(true)} 
+            aria-label="View scoring rubric"
+            style={{
+              background: isLight ? 'rgba(0,0,0,0.1)' : 'rgba(255,255,255,0.15)',
+              border: isLight ? '1px solid rgba(0,0,0,0.2)' : '1px solid rgba(255,255,255,0.3)',
+              color: isLight ? '#0f172a' : '#fff',
+              padding: isMobile ? '8px 14px' : '10px 18px',
+              borderRadius: 12,
+              cursor: 'pointer',
+              backdropFilter: 'blur(4px)',
+              fontSize: isMobile ? '14px' : '15px',
+              fontWeight: 500,
+              textShadow: isLight ? 'none' : '0 1px 2px rgba(0,0,0,0.3)',
+              transition: 'all 0.2s ease',
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 8
+            }}
+            onMouseEnter={(e) => {
+              e.currentTarget.style.background = isLight ? 'rgba(0,0,0,0.15)' : 'rgba(255,255,255,0.25)';
+              e.currentTarget.style.transform = 'translateY(-1px)';
+            }}
+            onMouseLeave={(e) => {
+              e.currentTarget.style.background = isLight ? 'rgba(0,0,0,0.1)' : 'rgba(255,255,255,0.15)';
+              e.currentTarget.style.transform = 'translateY(0)';
+            }}
+          >
+            <span>📊</span>
+            <span>View Scoring Rubric</span>
+          </button>
+        </div>
+
         {loading && (
           <div style={{
             textAlign: 'center',
@@ -464,6 +501,7 @@ const AppInner = React.memo(() => {
         </div>
       </div>
       <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
+      <RubricModal open={rubricModalOpen} onClose={() => setRubricModalOpen(false)} rubricPalette={rubricPalette} />
     </div>
   );
 });
