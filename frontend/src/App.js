@@ -235,6 +235,24 @@ const AppInner = React.memo(() => {
       width: '100%',
       boxSizing: 'border-box'
     }} data-theme={isLight ? 'light' : 'dark'}>
+      {/* Sky Logo - Top Left */}
+      <div style={{ position: 'fixed', top: isMobile ? 8 : 12, left: isMobile ? 8 : 12, zIndex: 50 }}>
+        <img 
+          src="/SkyLogo.png" 
+          alt="SkyScansGames Logo" 
+          style={{
+            width: '70px',
+            height: '70px',
+            borderRadius: '360px',
+            objectFit: 'cover',
+            border: isLight ? '2px solid rgba(0,0,0,0.1)' : '2px solid rgba(255,255,255,0.2)',
+            boxShadow: isLight ? '0 2px 8px rgba(0,0,0,0.1)' : '0 2px 8px rgba(0,0,0,0.3)',
+            background: isLight ? 'rgba(255,255,255,0.9)' : 'rgba(255,255,255,0.1)',
+            backdropFilter: 'blur(4px)'
+          }}
+        />
+      </div>
+
       {/* Settings shortcut */}
       <div style={{ position: 'fixed', top: isMobile ? 8 : 12, right: isMobile ? 8 : 12, zIndex: 50 }}>
         <button onClick={() => setSettingsOpen(true)} aria-label="Open settings" style={{ 
