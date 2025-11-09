@@ -78,6 +78,7 @@ const AppInner = React.memo(() => {
   const [pendingOpenPreview, setPendingOpenPreview] = useState(false);
   const [isPreviewOpen, setIsPreviewOpen] = useState(false);
   const [rubricModalOpen, setRubricModalOpen] = useState(false);
+  const [welcomeMessageVisible, setWelcomeMessageVisible] = useState(true);
   // Parallax state
   const [scrollY, setScrollY] = useState(0);
   const [viewportH, setViewportH] = useState(typeof window !== 'undefined' ? window.innerHeight : 0);
@@ -394,37 +395,63 @@ const AppInner = React.memo(() => {
         </h1>
 
         {/* Welcome message */}
-        <div style={{
-          textAlign: 'center',
-          marginBottom: isMobile ? '20px' : '30px',
-          padding: isMobile ? '15px 12px' : '20px 30px',
-          background: isLight ? 'rgba(255,255,255,0.7)' : 'rgba(255, 255, 255, 0.12)',
-          borderRadius: '16px',
-          border: isLight ? '1px solid rgba(0,0,0,0.08)' : '1px solid rgba(255, 255, 255, 0.2)',
-          maxWidth: '800px',
-          margin: '0 auto',
-          marginBottom: isMobile ? '20px' : '30px',
-          boxSizing: 'border-box'
-        }}>
-          <h2 style={{
-            margin: '0 0 12px 0',
-            color: isLight ? '#0f172a' : '#fff',
-            fontSize: isMobile ? '1.2rem' : '1.5rem',
-            fontWeight: 600,
-            fontFamily: 'inherit'
+        {welcomeMessageVisible && (
+          <div style={{
+            textAlign: 'center',
+            marginBottom: isMobile ? '30px' : '40px',
+            padding: isMobile ? '15px 12px' : '20px 30px',
+            paddingTop: isMobile ? '35px' : '45px',
+            background: isLight ? 'rgba(255,255,255,0.7)' : 'rgba(255, 255, 255, 0.12)',
+            borderRadius: '16px',
+            border: isLight ? '1px solid rgba(0,0,0,0.08)' : '1px solid rgba(255, 255, 255, 0.2)',
+            maxWidth: '800px',
+            margin: '0 auto',
+            marginBottom: isMobile ? '30px' : '40px',
+            boxSizing: 'border-box',
+            position: 'relative'
           }}>
-            Welcome to SkyScansGames
-          </h2>
-          <p style={{
-            margin: 0,
-            color: isLight ? '#475569' : 'rgba(255, 255, 255, 0.9)',
-            fontSize: isMobile ? '0.9rem' : '1rem',
-            lineHeight: 1.6,
-            fontFamily: 'inherit'
-          }}>
-            Discover and analyze video games with AI-powered insights. Search for any game to get comprehensive quality scores based on gameplay, story, presentation, technical performance, and more. Our intelligent scoring system evaluates games across seven key dimensions to help you make informed decisions about your next gaming experience.
-          </p>
-        </div>
+            <button
+              onClick={() => setWelcomeMessageVisible(false)}
+              aria-label="Close welcome message"
+              style={{
+                position: 'absolute',
+                top: isMobile ? '8px' : '12px',
+                right: isMobile ? '8px' : '12px',
+                border: 'none',
+                background: 'transparent',
+                fontSize: '1.5rem',
+                cursor: 'pointer',
+                color: isLight ? '#6b7280' : 'rgba(255, 255, 255, 0.7)',
+                fontFamily: 'inherit',
+                padding: '4px 8px',
+                lineHeight: 1,
+                transition: 'color 0.2s ease'
+              }}
+              onMouseEnter={(e) => e.target.style.color = isLight ? '#0f172a' : '#fff'}
+              onMouseLeave={(e) => e.target.style.color = isLight ? '#6b7280' : 'rgba(255, 255, 255, 0.7)'}
+            >
+              ×
+            </button>
+            <h2 style={{
+              margin: '0 0 12px 0',
+              color: isLight ? '#0f172a' : '#fff',
+              fontSize: isMobile ? '1.2rem' : '1.5rem',
+              fontWeight: 600,
+              fontFamily: 'inherit'
+            }}>
+              Welcome to SkyScansGames
+            </h2>
+            <p style={{
+              margin: 0,
+              color: isLight ? '#475569' : 'rgba(255, 255, 255, 0.9)',
+              fontSize: isMobile ? '0.9rem' : '1rem',
+              lineHeight: 1.6,
+              fontFamily: 'inherit'
+            }}>
+              Discover and analyse video games with AI-powered insights. Search for any game to get comprehensive quality scores based on gameplay, story, presentation, technical performance, and more. Our intelligent scoring system evaluates games across seven key dimensions to help you make informed decisions about your next gaming experience.
+            </p>
+          </div>
+        )}
 
         <div style={{
           display: 'flex',
