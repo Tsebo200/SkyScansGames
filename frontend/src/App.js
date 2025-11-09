@@ -432,6 +432,18 @@ const AppInner = React.memo(() => {
 
         {/* If user clicked bubble before scores loaded, open preview as soon as scores are ready */}
         {/* queued preview opening handled via useEffect above */}
+
+        {/* Copyright notice */}
+        <div style={{
+          textAlign: 'center',
+          padding: isMobile ? '20px 10px' : '30px 20px',
+          marginTop: isMobile ? '30px' : '50px',
+          color: isLight ? 'rgba(15, 23, 42, 0.7)' : 'rgba(255, 255, 255, 0.7)',
+          fontSize: isMobile ? '0.85rem' : '0.9rem',
+          fontFamily: 'inherit'
+        }}>
+          Copyright 2025 © SkyScansGames | Creative T
+        </div>
       </div>
       <SettingsModal open={settingsOpen} onClose={() => setSettingsOpen(false)} />
     </div>
