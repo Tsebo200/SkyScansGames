@@ -706,16 +706,22 @@ const ScoreDashboard = React.memo(({ scores, game, externalOpenPreview = 0, onPr
 
       {/* Informational panels */}
       <div ref={cardsContainerRef} onKeyDown={handleContainerArrowNav} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '25px', marginBottom: '30px' }}>
-        <div onClick={() => handleMetricClick('reviews_score')} title={getReasoning('reviews_score').short || 'View reviews details'} style={{ background: 'rgba(255,255,255,0.12)', padding: 20, borderRadius: 18, border: '1px solid rgba(255,255,255,0.25)', cursor: 'pointer' }} role="button" tabIndex={0} data-nav="cards" onKeyDown={(e) => activateOnKey(e, () => handleMetricClick('reviews_score'))}>
-          <h4 style={{ margin: '0 0 10px 0', color: '#fff' }}>Reviews (Informational)</h4>
-          <p style={{ margin: 0, color: '#eee', fontSize: '0.9rem' }}>Metacritic: {scores.reviews_score ?? 'N/A'}/100 (Not weighted).</p>
+        <div onClick={() => handleMetricClick('reviews_score')} title={getReasoning('reviews_score').short || 'View reviews details'} style={{ background: 'rgba(255,255,255,0.12)', padding: 20, borderRadius: 18, border: '1px solid rgba(255,255,255,0.25)', cursor: 'pointer', position: 'relative' }} role="button" tabIndex={0} data-nav="cards" onKeyDown={(e) => activateOnKey(e, () => handleMetricClick('reviews_score'))}>
+          <div style={{ position: 'absolute', top: 12, left: 12, width: '70px', height: '70px', borderRadius: '360px', background: 'rgba(14, 165, 233, 0.2)', border: '2px solid rgba(14, 165, 233, 0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 2px 8px rgba(0,0,0,0.2)' }}>
+            <span style={{ fontSize: '32px' }}>🤖</span>
+          </div>
+          <h4 style={{ margin: '0 0 10px 0', color: '#fff', paddingLeft: '85px' }}>Reviews (Informational)</h4>
+          <p style={{ margin: 0, color: '#eee', fontSize: '0.9rem', paddingLeft: '85px' }}>Metacritic: {scores.reviews_score ?? 'N/A'}/100 (Not weighted).</p>
           {getReasoning('reviews_score').short && (
-            <p style={{ margin: '6px 0 0 0', color: '#ddd', fontSize: '0.8rem', fontStyle: 'italic' }}>{getReasoning('reviews_score').short}</p>
+            <p style={{ margin: '6px 0 0 0', color: '#ddd', fontSize: '0.8rem', fontStyle: 'italic', paddingLeft: '85px' }}>{getReasoning('reviews_score').short}</p>
           )}
         </div>
-        <div onClick={() => handleMetricClick('accessibility_score')} title={getReasoning('accessibility_score').short || 'View accessibility details'} style={{ background: 'rgba(255,255,255,0.12)', padding: 20, borderRadius: 18, border: '1px solid rgba(255,255,255,0.25)', cursor: 'pointer' }} role="button" tabIndex={0} data-nav="cards" onKeyDown={(e) => activateOnKey(e, () => handleMetricClick('accessibility_score'))}>
-          <h4 style={{ margin: '0 0 10px 0', color: '#fff' }}>Accessibility (Informational)</h4>
-          <p style={{ margin: 0, color: '#eee', fontSize: '0.9rem' }}>Score: {scores.accessibility_score ?? 'N/A'} (Heuristic blend)</p>
+        <div onClick={() => handleMetricClick('accessibility_score')} title={getReasoning('accessibility_score').short || 'View accessibility details'} style={{ background: 'rgba(255,255,255,0.12)', padding: 20, borderRadius: 18, border: '1px solid rgba(255,255,255,0.25)', cursor: 'pointer', position: 'relative' }} role="button" tabIndex={0} data-nav="cards" onKeyDown={(e) => activateOnKey(e, () => handleMetricClick('accessibility_score'))}>
+          <div style={{ position: 'absolute', top: 12, left: 12, width: '70px', height: '70px', borderRadius: '360px', background: 'rgba(14, 165, 233, 0.2)', border: '2px solid rgba(14, 165, 233, 0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 2px 8px rgba(0,0,0,0.2)' }}>
+            <span style={{ fontSize: '32px' }}>🤖</span>
+          </div>
+          <h4 style={{ margin: '0 0 10px 0', color: '#fff', paddingLeft: '85px' }}>Accessibility (Informational)</h4>
+          <p style={{ margin: 0, color: '#eee', fontSize: '0.9rem', paddingLeft: '85px' }}>Score: {scores.accessibility_score ?? 'N/A'} (Heuristic blend)</p>
           {(() => {
             const det = scores?.reasoning?.accessibility_score?.detailed;
             const feats = det?.heuristic_features;
@@ -724,18 +730,21 @@ const ScoreDashboard = React.memo(({ scores, game, externalOpenPreview = 0, onPr
             const total = vals.length;
             const present = vals.filter(v => !!v).length;
             return (
-              <p style={{ margin: '6px 0 0 0', color: '#ddd', fontSize: '0.8rem' }}>
+              <p style={{ margin: '6px 0 0 0', color: '#ddd', fontSize: '0.8rem', paddingLeft: '85px' }}>
                 Features present: {present}/{total} • Confidence: {det?.heuristic_confidence ?? '—'}
               </p>
             );
           })()}
           {getReasoning('accessibility_score').short && (
-            <p style={{ margin: '6px 0 0 0', color: '#ddd', fontSize: '0.8rem', fontStyle: 'italic' }}>{getReasoning('accessibility_score').short}</p>
+            <p style={{ margin: '6px 0 0 0', color: '#ddd', fontSize: '0.8rem', fontStyle: 'italic', paddingLeft: '85px' }}>{getReasoning('accessibility_score').short}</p>
           )}
         </div>
-        <div onClick={() => handleMetricClick('life_support')} title={getReasoning('life_support').short || 'View life support details'} style={{ background: 'rgba(255,255,255,0.12)', padding: 20, borderRadius: 18, border: `1px solid ${lifeSupportColor}55`, cursor: 'pointer' }} role="button" tabIndex={0} data-nav="cards" onKeyDown={(e) => activateOnKey(e, () => handleMetricClick('life_support'))}>
-          <h4 style={{ margin: '0 0 10px 0', color: '#fff' }}>Life Support (Informational)</h4>
-          <p style={{ margin: 0, color: '#eee', fontSize: '0.9rem' }}>
+        <div onClick={() => handleMetricClick('life_support')} title={getReasoning('life_support').short || 'View life support details'} style={{ background: 'rgba(255,255,255,0.12)', padding: 20, borderRadius: 18, border: `1px solid ${lifeSupportColor}55`, cursor: 'pointer', position: 'relative' }} role="button" tabIndex={0} data-nav="cards" onKeyDown={(e) => activateOnKey(e, () => handleMetricClick('life_support'))}>
+          <div style={{ position: 'absolute', top: 12, left: 12, width: '70px', height: '70px', borderRadius: '360px', background: 'rgba(14, 165, 233, 0.2)', border: '2px solid rgba(14, 165, 233, 0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 2px 8px rgba(0,0,0,0.2)' }}>
+            <span style={{ fontSize: '32px' }}>🤖</span>
+          </div>
+          <h4 style={{ margin: '0 0 10px 0', color: '#fff', paddingLeft: '85px' }}>Life Support (Informational)</h4>
+          <p style={{ margin: 0, color: '#eee', fontSize: '0.9rem', paddingLeft: '85px' }}>
             {lifeSupportLabel}{lifeSupport.last_update_date ? ` • Updated: ${lifeSupport.last_update_date}` : ''}
           </p>
         </div>
