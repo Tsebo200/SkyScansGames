@@ -18,8 +18,8 @@ const ScoreDashboard = React.memo(({ scores, game, externalOpenPreview = 0, onPr
   const [descExpanded, setDescExpanded] = useState(false);
   // Responsive state
   const [isMobile, setIsMobile] = useState(typeof window !== 'undefined' ? window.innerWidth < 768 : false);
- 
- // Open Game Preview when an external trigger changes
+
+  // Open Game Preview when an external trigger changes
   useEffect(() => {
     if (externalOpenPreview) {
       setShowGamePreview(true);
@@ -82,7 +82,8 @@ const ScoreDashboard = React.memo(({ scores, game, externalOpenPreview = 0, onPr
       setRawgLoading(true);
       setRawgError(null);
       try {
-        const resp = await fetch(`/api/games/${game.id}/rawg-details`);
+        const apiBase = process.env.REACT_APP_API_BASE || (process.env.NODE_ENV === 'production' ? '/api' : 'http://localhost:8000/api');
+        const resp = await fetch(`${apiBase}/games/${game.id}/rawg-details`);
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
         const data = await resp.json();
         if (cancelled) return;
@@ -267,16 +268,17 @@ const ScoreDashboard = React.memo(({ scores, game, externalOpenPreview = 0, onPr
   }, [rawgDescEffective, descExpanded]);
 
   
-  // Details URL (for QR) - now points to specific game's JSON data
+  // Details URL (for QR)
   const detailsUrl = useMemo(() => {
-  try {
-    const origin = window?.location?.origin || '';
-    return `${origin}/api/games/${game.id}`;
-  } catch {
-    const apiBase = process.env.REACT_APP_API_BASE || 'http://localhost:8000/api';
-    return `${apiBase}/games/${game.id}`;
-  }
-}, [game.id]);
+    try {
+      const origin = window?.location?.origin || '';
+      return `${origin}/api/games/${game.id}`;
+    } catch {
+      const apiBase = process.env.REACT_APP_API_BASE || 'http://localhost:8000/api';
+      return `${apiBase}/games/${game.id}`;
+    }
+  }, [game.id]);
+
   // External icon URLs
   const PS_LOGO_URL = useMemo(() => 'https://icon2.cleanpng.com/20180729/qbq/234eef5332a8d317914af0d1b0c5da70.webp', []);
   const PC_LOGO_URL = useMemo(() => 'https://assets.streamlinehq.com/image/private/w_300,h_300,ar_1/f_auto/v1/icons/video-games/steam-2myixiwqkwzmuvfmd69q38.png/steam-6zs7qobtrw9nv56hb122tc.png?_a=DATAg1AAZAA0', []);
@@ -284,7 +286,7 @@ const ScoreDashboard = React.memo(({ scores, game, externalOpenPreview = 0, onPr
   const XBOX_LOGO_URL = useMemo(() => 'https://upload.wikimedia.org/wikipedia/commons/e/e5/Xbox_Logo.svg', []);
 
   // Increase padding for tab cards to give more breathing room
-  const tabCardStyle = { background: '#f8fafc', border: '1px solid #e5e7eb', borderRadius: 12, padding: 16 };
+  const tabCardStyle = { background: '#f8fafc', border: '1px solid #e5e7eb', borderRadius: 12, padding: isMobile ? 12 : 16 };
 
   // Platform icon helper
   const PlatformIcon = useCallback(({ name, size = 18 }) => {
@@ -348,7 +350,8 @@ const ScoreDashboard = React.memo(({ scores, game, externalOpenPreview = 0, onPr
   const fetchTelemetry = useCallback(async (force = false) => {
     setTelemetryLoading(true); setTelemetryError(null);
     try {
-      const resp = await fetch(`/api/games/${game.id}/community-telemetry${force ? '?force=true' : ''}`);
+      const apiBase = process.env.REACT_APP_API_BASE || (process.env.NODE_ENV === 'production' ? '/api' : 'http://localhost:8000/api');
+      const resp = await fetch(`${apiBase}/games/${game.id}/community-telemetry${force ? '?force=true' : ''}`);
       if (!resp.ok) throw new Error('Failed to load telemetry');
       const data = await resp.json();
       setTelemetry(data.telemetry);
@@ -398,17 +401,17 @@ const ScoreDashboard = React.memo(({ scores, game, externalOpenPreview = 0, onPr
           inferredResp = await fetch(`${apiBase}/games/${game.id}/life-support-inferred`);
           if (inferredResp.ok) {
             const inferredData = await inferredResp.json();
-            if (cancelled) return;
+        if (cancelled) return;
             if (inferredData.life_support_inferred) {
               const inferred = inferredData.life_support_inferred;
               const status = inferred.inferred_status || inferred.status || 'unknown';
-              const deltaMap = { eternal: 10, active: 5, sunset: -5, offline: -10, unknown: 0 };
+          const deltaMap = { eternal: 10, active: 5, sunset: -5, offline: -10, unknown: 0 };
               const ccu = inferred.ccu_value || inferred.evidence?.ccu || null;
               
-              setLifeSupport({
-                status,
-                delta: deltaMap[status] ?? 0,
-                loading: false,
+          setLifeSupport({
+            status,
+            delta: deltaMap[status] ?? 0,
+            loading: false,
                 notes: ccu !== null ? `Steam CCU: ${ccu.toLocaleString()} players online` : 'Based on online player data',
                 last_update_date: null,
                 next_update_hint: null,
@@ -421,320 +424,14 @@ const ScoreDashboard = React.memo(({ scores, game, externalOpenPreview = 0, onPr
           console.warn('Inferred life support fetch error:', e);
         }
         
-        // Fallback to manual life support entry
-        const resp = await fetch(`${apiBase}/games/${game.id}/life-support`);
-        if (!resp.ok) throw new Error('life support fetch failed');
-        const data = await resp.json();
-        if (cancelled) return;
-        if (data.life_support) {
-          const status = data.life_support.support_status || data.life_support.status || 'unknown';
-          const deltaMap = { eternal: 10, active: 5, sunset: -5, offline: -10, unknown: 0 };
-          setLifeSupport({
-            status,
-            delta: deltaMap[status] ?? 0,
-            loading: false,
-            notes: data.life_support.notes,
-            last_update_date: data.life_support.last_update_date,
-            next_update_hint: data.life_support.next_update_hint,
-            ccu: null
-          });
-        } else {
-          setLifeSupport(ls => ({ ...ls, loading: false, status: 'unknown' }));
-        }
-      } catch (error) {
-        console.warn('Life support fetch error:', error);
-        if (!cancelled) setLifeSupport(ls => ({ ...ls, loading: false, status: 'unknown' }));
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [game.id, scores?.reasoning]);
-
-  const lifeSupportColor = useMemo(() => {
-    const map = { eternal: '#27ae60', active: '#2980b9', sunset: '#e67e22', offline: '#c0392b', unknown: '#7f8c8d' };
-    return map[lifeSupport.status] || '#7f8c8d';
-  }, [lifeSupport.status]);
-  const lifeSupportLabel = useMemo(() => {
-    if (lifeSupport.loading) return 'Loading…';
-    const deltaTxt = lifeSupport.delta ? ` (${lifeSupport.delta > 0 ? '+' : ''}${lifeSupport.delta})` : '';
-    return `${lifeSupport.status.charAt(0).toUpperCase()}${lifeSupport.status.slice(1)}${deltaTxt}`;
-  }, [lifeSupport.loading, lifeSupport.status, lifeSupport.delta]);
-
-  // Monetisation fairness tag (color + label)
-  const monetisationFairness = useMemo(() => {
-    const d = (localScores || scores)?.reasoning?.monetisation?.detailed;
-    if (d && typeof d === 'object' && (d.fairness_label || d.fairness_color)) {
-      const label = typeof d.fairness_label === 'string' ? d.fairness_label : 'Unknown';
-      const color = typeof d.fairness_color === 'string' ? d.fairness_color : '#7f8c8d';
-      return { label, color };
-    }
-    let label = 'Unknown';
-    let color = '#7f8c8d';
-    if (d && typeof d === 'object') {
-      const types = Array.isArray(d.types) ? d.types.filter(Boolean) : [];
-      const notesStr = typeof d.notes === 'string' ? d.notes : '';
-      const textHas = (re) => types.some(t => typeof t === 'string' && re.test(t)) || re.test(notesStr);
-      const hasP2W = textHas(/(^|\b)(p2w\s*:\s*yes|pay\s*-?to\s*-?win|gameplay\s*advantage|stat\s*boost|xp\s*(boost|advantage)|power\s*boost)/i) || textHas(/p2w\s*:\s*mixed/i);
-      const explicitP2WNo = textHas(/(^|\b)p2w\s*:\s*no\b/i);
-      const explicitNoMTX = textHas(/no\s*(microtransactions|mtx)\b/i);
-      const hasMTX = textHas(/(\bmtx\b|microtransaction|battle\s*pass|item\s*shop|in[- ]app|iap|loot\s*box|gacha)/i);
-      if (hasP2W) { label = 'Poor'; color = '#c0392b'; }
-      else if (explicitNoMTX || (!hasMTX && !hasP2W)) { label = 'Perfect'; color = '#00bfff'; }
-      else if (hasMTX && (explicitP2WNo || !hasP2W)) { label = 'Fair'; color = '#8e44ad'; }
-    }
-    return { label, color };
-  }, [localScores, scores]);
-
-  // Modal control helpers
-  const handleMetricClick = useCallback((metricKey) => { setSelectedMetric(metricKey); setShowModal(true); }, []);
-  const closeModal = useCallback(() => { setShowModal(false); setSelectedMetric(null); }, []);
-  const reasoningRef = useMemo(() => ((localScores || scores) && (localScores || scores).reasoning) || null, [localScores, scores]);
-  const getReasoning = useCallback((metricKey) => reasoningRef?.[metricKey] || { short: 'No reasoning available', detailed: 'No detailed reasoning available' }, [reasoningRef]);
-  const selectedReasoning = useMemo(() => { if (!selectedMetric) return null; return getReasoning(selectedMetric); }, [selectedMetric, getReasoning]);
-
-  // Render helpers
-  const renderDetailed = useCallback((reason) => {
-    if (!reason) return <p style={{ margin: 0 }}>No details.</p>;
-    const detailed = reason.detailed;
-    if (detailed == null) return <p style={{ margin: 0 }}>No detailed explanation available.</p>;
-    if (typeof detailed === 'string' || typeof detailed === 'number') {
-      return <p style={{ margin: 0, textAlign: 'justify' }}>{String(detailed)}</p>;
-    }
-    if (Array.isArray(detailed)) {
-      if (!detailed.length) return <p style={{ margin: 0 }}>No entries.</p>;
-      return (
-        <ul style={{ margin: '0 0 0 18px', padding: 0 }}>
-          {detailed.map((v, i) => (
-            <li key={i} style={{ marginBottom: '4px' }}>{typeof v === 'object' ? JSON.stringify(v) : String(v)}</li>
-          ))}
-        </ul>
-      );
-    }
-    if (typeof detailed === 'object') {
-      const entries = Object.entries(detailed).filter(([k]) => k !== 'explanation');
-      const explanation = detailed.explanation;
-      if (!entries.length && !explanation) return <p style={{ margin: 0 }}>No structured details.</p>;
-      const prettyKey = (k) => {
-        if (k === 'optimisation') return 'optimisation (game file size)';
-        if (k === 'stability_reliability') return 'stability & reliability (glitches or crashes)';
-        return k.replace(/_/g, ' ');
-      };
-      return (
-        <div style={{ margin: 0 }}>
-          {entries.length > 0 && (
-            <table style={{ width: '100%', borderCollapse: 'collapse', marginBottom: explanation ? '12px' : 0 }}>
-              <tbody>
-                {entries.map(([k, v]) => (
-                  <tr key={k}>
-                    <td style={{ padding: '4px 6px', fontWeight: 500, fontSize: '0.85rem', textTransform: 'capitalize', width: '55%' }}>{prettyKey(k)}</td>
-                    <td style={{ padding: '4px 6px', fontSize: '0.85rem', textAlign: 'right' }}>
-                      {typeof v === 'number' ? `${v.toFixed(1)}` : (typeof v === 'object' ? JSON.stringify(v) : String(v))}
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          )}
-          {explanation && (
-            <p style={{ margin: 0, textAlign: 'justify', fontSize: '0.9rem', lineHeight: 1.4 }}>{explanation}</p>
-          )}
-        </div>
-      );
-    }
-    return <p style={{ margin: 0 }}>{String(detailed)}</p>;
-  }, []);
-
-  const renderMonetisation = useCallback((reason) => {
-    if (!reason) return <p style={{ margin: 0 }}>No details.</p>;
-    const detailed = reason.detailed;
-    if (typeof detailed === 'string') {
-      return <p style={{ margin: 0, textAlign: 'justify' }}>{detailed}</p>;
-    }
-    if (detailed && typeof detailed === 'object') {
-      const types = Array.isArray(detailed.types) ? detailed.types.filter(Boolean) : [];
-      const notes = typeof detailed.notes === 'string' ? detailed.notes : null;
-      const tactics = Array.isArray(detailed.tactics) ? detailed.tactics.filter(Boolean) : [];
-      return (
-        <div style={{ margin: 0 }}>
-          {types.length > 0 && (
-            <ul style={{ margin: '0 0 10px 18px', padding: 0 }}>
-              {types.map((t, i) => (
-                <li key={i} style={{ marginBottom: '4px' }}>{String(t)}</li>
-              ))}
-            </ul>
-          )}
-          {tactics.length > 0 && (
-            <div style={{ marginBottom: 10 }}>
-              <div style={{ fontWeight: 600, color: '#111827', margin: '6px 0' }}>Tactics</div>
-              <ul style={{ margin: '0 0 0 18px', padding: 0 }}>
-                {tactics.map((t, i) => (
-                  <li key={i} style={{ marginBottom: 4 }}>{String(t)}</li>
-                ))}
-              </ul>
-            </div>
-          )}
-          {notes && (
-            <p style={{ margin: 0, textAlign: 'justify' }}>{notes}</p>
-          )}
-          {!types.length && !notes && (
-            <p style={{ margin: 0 }}>No monetisation details available.</p>
-          )}
-        </div>
-      );
-    }
-    return <p style={{ margin: 0 }}>No monetisation details available.</p>;
-  }, []);
-
-  const overallScoreColor = useMemo(() => {
-    const score = scores.overall_score;
-    // Use Sky Blue when the score passes over 78%
-    if (typeof score === 'number' && score > 78) return '#00bfff';
-    // Fallback colors for lower bands
-    return score >= 70 ? '#f9ca24' : '#ff6b6b';
-  }, [scores.overall_score]);
-
-  // Keyboard navigation across cards (left/right/up/down)
-  const cardsContainerRef = useRef(null);
-  const handleContainerArrowNav = useCallback((e) => {
-    const keys = ['ArrowLeft','ArrowRight','ArrowUp','ArrowDown'];
-    if (!keys.includes(e.key)) return;
-    const container = cardsContainerRef.current;
-    if (!container) return;
-    const focusables = Array.from(container.querySelectorAll('[data-nav="cards"]'));
-    if (!focusables.length) return;
-    const active = document.activeElement;
-    // If focus is not on a card yet, focus the first card
-    if (!focusables.includes(active)) {
-      e.preventDefault();
-      focusables[0].focus();
-      return;
-    }
-    const rects = focusables.map(el => ({ el, r: el.getBoundingClientRect() }));
-    const curIdx = focusables.indexOf(active);
-    const cur = rects[curIdx];
-    const cx = cur.r.left + cur.r.width/2;
-    const cy = cur.r.top + cur.r.height/2;
-    const dir = e.key;
-    const candidates = rects.filter((o, idx) => {
-      if (idx === curIdx) return false;
-      const ox = o.r.left + o.r.width/2;
-      const oy = o.r.top + o.r.height/2;
-      if (dir === 'ArrowRight') return ox > cx + 2;
-      if (dir === 'ArrowLeft') return ox < cx - 2;
-      if (dir === 'ArrowDown') return oy > cy + 2;
-      if (dir === 'ArrowUp') return oy < cy - 2;
-      return false;
-    });
-    if (!candidates.length) return; // Let default behavior happen
-    e.preventDefault();
-    // Pick nearest by Euclidean distance
-    const pick = candidates.reduce((best, o) => {
-      const ox = o.r.left + o.r.width/2;
-      const oy = o.r.top + o.r.height/2;
-      const dx = ox - cx;
-      const dy = oy - cy;
-      const d2 = dx*dx + dy*dy;
-      if (!best || d2 < best.d2) return { el: o.el, d2 };
-      return best;
-    }, null);
-    if (pick?.el) pick.el.focus();
-  }, []);
-
-  const activateOnKey = useCallback((e, onActivate) => {
-    if (e.key === 'Enter' || e.key === ' ') {
-      e.preventDefault();
-      onActivate?.();
-    }
-  }, []);
-
-  return (
-    <div style={{ padding: '20px' }}>
-      <h2
-        onClick={() => setShowGamePreview(true)}
-        title="Tap to preview game details"
-        role="button"
-        tabIndex={0}
-        onKeyDown={(e) => activateOnKey(e, () => setShowGamePreview(true))}
-        style={{
-          color: '#fff', textAlign: 'center', marginBottom: '15px', background: 'rgba(255, 255, 255, 0.1)',
-          padding: '15px 30px', borderRadius: '25px', border: '1px solid rgba(255, 255, 255, 0.2)',
-          boxShadow: '0 4px 20px rgba(0, 0, 0, 0.1)', fontSize: '2rem', fontWeight: '300', cursor: 'pointer'
-        }}
-      >
-        {game.title} - Quality Analysis
-      </h2>
-
-      {/* Metric tiles */}
-      <div ref={cardsContainerRef} onKeyDown={handleContainerArrowNav} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(250px, 1fr))', gap: '25px', marginBottom: '30px' }}>
-        {rubricItems.map((item, index) => (
-          <div key={index}
-            style={{
-              background: 'rgba(255, 255, 255, 0.1)', borderRadius: '20px', padding: '25px', textAlign: 'center',
-              border: '1px solid rgba(255, 255, 255, 0.2)', boxShadow: '0 4px 20px rgba(0, 0, 0, 0.1)', transition: 'transform 0.2s ease, box-shadow 0.2s ease', cursor: 'pointer'
-            }}
-            onClick={() => handleMetricClick(item.key)}
-            role="button"
-            tabIndex={0}
-            data-nav="cards"
-            onKeyDown={(e) => activateOnKey(e, () => handleMetricClick(item.key))}
-            title={getReasoning(item.key).short}
-            onMouseEnter={(e) => { e.currentTarget.style.transform = 'translateY(-2px)'; e.currentTarget.style.boxShadow = '0 8px 25px rgba(0, 0, 0, 0.15)'; }}
-            onMouseLeave={(e) => { e.currentTarget.style.transform = 'translateY(0)'; e.currentTarget.style.boxShadow = '0 4px 20px rgba(0, 0, 0, 0.1)'; }}
-          >
-            <h3 style={{ margin: '0 0 8px 0', color: '#fff', fontSize: '1.1rem', fontWeight: 500 }}>{item.label}</h3>
-            <div style={{ fontSize: '2.8rem', fontWeight: 'bold', color: item.color, textShadow: '0 0 5px rgba(255, 255, 255, 0.2)', marginBottom: 10 }}>
-              {item.value ?? '—'}{typeof item.value === 'number' ? '%' : ''}
-            </div>
-            <div style={{ width: '100%', height: 8, background: 'rgba(255, 255, 255, 0.2)', borderRadius: 4, overflow: 'hidden' }}>
-              <div style={{ width: `${item.value || 0}%`, height: '100%', background: `linear-gradient(90deg, ${item.color}, ${item.color}aa)`, borderRadius: 4, transition: 'width 0.8s ease' }} />
-            </div>
-            {getReasoning(item.key).short && (
-              <div style={{ marginTop: 8, color: '#e5e7eb', fontSize: '0.85rem', opacity: 0.9 }}>{getReasoning(item.key).short}</div>
-            )}
-          </div>
-        ))}
-
-        {/* Monetisation preview card */}
-        <div
-          onClick={() => handleMetricClick('monetisation')}
-          title={getReasoning('monetisation').short}
-          style={{ background: 'rgba(255, 255, 255, 0.1)', borderRadius: 20, padding: 25, textAlign: 'center', border: '1px solid rgba(255, 255, 255, 0.2)', boxShadow: '0 4px 20px rgba(0, 0, 0, 0.1)', transition: 'transform 0.2s ease, box-shadow 0.2s ease', cursor: 'pointer' }}
-          role="button"
-          tabIndex={0}
-          data-nav="cards"
-          onKeyDown={(e) => activateOnKey(e, () => handleMetricClick('monetisation'))}
-          onMouseEnter={(e) => { e.currentTarget.style.transform = 'translateY(-2px)'; e.currentTarget.style.boxShadow = '0 8px 25px rgba(0, 0, 0, 0.15)'; }}
-          onMouseLeave={(e) => { e.currentTarget.style.transform = 'translateY(0)'; e.currentTarget.style.boxShadow = '0 4px 20px rgba(0, 0, 0, 0.1)'; }}
-        >
-          <h3 style={{ margin: '0 0 15px 0', color: '#fff', fontSize: '1.1rem', fontWeight: 500 }}>Monetisation</h3>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: 10, marginBottom: 6 }}>
-            <span style={{ width: 14, height: 14, borderRadius: '50%', background: monetisationFairness.color, boxShadow: `0 0 6px ${monetisationFairness.color}aa` }} />
-            <span style={{ color: '#eee', fontSize: '0.95rem', fontWeight: 500 }}>Fairness: {monetisationFairness.label}</span>
-          </div>
-          <div style={{ width: '100%', height: 8, background: 'rgba(255, 255, 255, 0.2)', borderRadius: 4, overflow: 'hidden' }}>
-            <div style={{ width: '100%', height: '100%', background: `linear-gradient(90deg, ${monetisationFairness.color}, ${monetisationFairness.color}aa)`, borderRadius: 4, opacity: 0.6 }} />
-          </div>
-          {getReasoning('monetisation').short && (
-            <div style={{ marginTop: 8, color: '#e5e7eb', fontSize: '0.85rem', opacity: 0.9 }}>{getReasoning('monetisation').short}</div>
-          )}
-        </div>
-      </div>
-
-      {/* Informational panels */}
-      <div ref={cardsContainerRef} onKeyDown={handleContainerArrowNav} style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '25px', marginBottom: '30px' }}>
-        <div onClick={() => handleMetricClick('reviews_score')} title={getReasoning('reviews_score').short || 'View reviews details'} style={{ background: 'rgba(255,255,255,0.12)', padding: 20, borderRadius: 18, border: '1px solid rgba(255,255,255,0.25)', cursor: 'pointer', position: 'relative' }} role="button" tabIndex={0} data-nav="cards" onKeyDown={(e) => activateOnKey(e, () => handleMetricClick('reviews_score'))}>
-          <div style={{ position: 'absolute', top: 12, left: 12, width: '70px', height: '70px', borderRadius: '360px', background: 'rgba(14, 165, 233, 0.2)', border: '2px solid rgba(14, 165, 233, 0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 2px 8px rgba(0,0,0,0.2)' }}>
-            <span style={{ fontSize: '32px' }}>🤖</span>
-          </div>
-          <h4 style={{ margin: '0 0 10px 0', color: '#fff', paddingLeft: '85px' }}>Reviews (Informational)</h4>
-          <p style={{ margin: 0, color: '#eee', fontSize: '0.9rem', paddingLeft: '85px' }}>Metacritic: {scores.reviews_score ?? 'N/A'}/100 (Not weighted).</p>
-          {getReasoning('reviews_score').short && (
+        // Fallback to manual life support entry          {getReasoning('reviews_score').short && (
             <p style={{ margin: '6px 0 0 0', color: '#ddd', fontSize: '0.8rem', fontStyle: 'italic', paddingLeft: '85px' }}>{getReasoning('reviews_score').short}</p>
           )}
         </div>
         <div onClick={() => handleMetricClick('accessibility_score')} title={getReasoning('accessibility_score').short || 'View accessibility details'} style={{ background: 'rgba(255,255,255,0.12)', padding: 20, borderRadius: 18, border: '1px solid rgba(255,255,255,0.25)', cursor: 'pointer', position: 'relative' }} role="button" tabIndex={0} data-nav="cards" onKeyDown={(e) => activateOnKey(e, () => handleMetricClick('accessibility_score'))}>
           <div style={{ position: 'absolute', top: 12, left: 12, width: '70px', height: '70px', borderRadius: '360px', background: 'rgba(14, 165, 233, 0.2)', border: '2px solid rgba(14, 165, 233, 0.4)', display: 'flex', alignItems: 'center', justifyContent: 'center', boxShadow: '0 2px 8px rgba(0,0,0,0.2)' }}>
             <span style={{ fontSize: '32px' }}>🤖</span>
-          </div>
+            </div>
           <h4 style={{ margin: '0 0 10px 0', color: '#fff', paddingLeft: '85px' }}>Accessibility (Informational)</h4>
           <p style={{ margin: 0, color: '#eee', fontSize: '0.9rem', paddingLeft: '85px' }}>Score: {scores.accessibility_score ?? 'N/A'} (Heuristic blend)</p>
           {(() => {
@@ -779,11 +476,11 @@ const ScoreDashboard = React.memo(({ scores, game, externalOpenPreview = 0, onPr
       </div>
 
       {/* Overall score highlight */}
-      <div onClick={() => handleMetricClick('overall_score')} title={getReasoning('overall_score').short} style={{ background: 'rgba(255, 255, 255, 0.15)', borderRadius: 25, padding: 30, textAlign: 'center', border: '1px solid rgba(255, 255, 255, 0.3)', boxShadow: '0 4px 20px rgba(0, 0, 0, 0.1)', position: 'relative', overflow: 'hidden', cursor: 'pointer' }}>
-        <h3 style={{ margin: '0 0 20px 0', color: '#fff', fontSize: '2rem', fontWeight: 300, position: 'relative', zIndex: 1 }}>Overall Quality Score</h3>
-        <div style={{ fontSize: '5rem', fontWeight: 'bold', color: '#fff', textShadow: '0 0 10px rgba(255, 255, 255, 0.3)', position: 'relative', zIndex: 1 }}>{scores.overall_score}%</div>
-        <div style={{ width: 200, height: 200, margin: '20px auto 0', borderRadius: '50%', background: `conic-gradient(${overallScoreColor} ${scores.overall_score}%, rgba(255, 255, 255, 0.1) ${scores.overall_score}%)`, position: 'relative', zIndex: 1, boxShadow: '0 0 15px rgba(255, 255, 255, 0.1)' }}>
-          <div style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', width: 160, height: 160, borderRadius: '50%', background: 'rgba(255, 255, 255, 0.1)' }} />
+      <div onClick={() => handleMetricClick('overall_score')} title={getReasoning('overall_score').short} style={{ background: 'rgba(255, 255, 255, 0.15)', borderRadius: 25, padding: isMobile ? '20px' : 30, textAlign: 'center', border: '1px solid rgba(255, 255, 255, 0.3)', boxShadow: '0 4px 20px rgba(0, 0, 0, 0.1)', position: 'relative', overflow: 'hidden', cursor: 'pointer' }}>
+        <h3 style={{ margin: '0 0 20px 0', color: '#fff', fontSize: isMobile ? '1.5rem' : '2rem', fontWeight: 300, position: 'relative', zIndex: 1 }}>Overall Quality Score</h3>
+        <div style={{ fontSize: isMobile ? '3.5rem' : '5rem', fontWeight: 'bold', color: '#fff', textShadow: '0 0 10px rgba(255, 255, 255, 0.3)', position: 'relative', zIndex: 1 }}>{scores.overall_score}%</div>
+        <div style={{ width: isMobile ? 150 : 200, height: isMobile ? 150 : 200, margin: '20px auto 0', borderRadius: '50%', background: `conic-gradient(${overallScoreColor} ${scores.overall_score}%, rgba(255, 255, 255, 0.1) ${scores.overall_score}%)`, position: 'relative', zIndex: 1, boxShadow: '0 0 15px rgba(255, 255, 255, 0.1)' }}>
+          <div style={{ position: 'absolute', top: '50%', left: '50%', transform: 'translate(-50%, -50%)', width: isMobile ? 120 : 160, height: isMobile ? 120 : 160, borderRadius: '50%', background: 'rgba(255, 255, 255, 0.1)' }} />
         </div>
       </div>
 
@@ -822,7 +519,7 @@ const ScoreDashboard = React.memo(({ scores, game, externalOpenPreview = 0, onPr
         </div>,
         document.body
       )}
-{/* Game Preview modal with tabs */}
+      {/* Game Preview modal with tabs */}
       {showGamePreview && createPortal(
         <div onClick={() => setShowGamePreview(false)} style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.75)', display: 'flex', alignItems: isMobile ? 'flex-start' : 'center', justifyContent: 'center', zIndex: 9999, overflowY: 'auto', padding: isMobile ? '10px' : 0 }}>
           <div onClick={(e) => e.stopPropagation()} style={{ width: isMobile ? '100%' : 'min(1100px, 98vw)', maxWidth: isMobile ? '100%' : '1100px', maxHeight: isMobile ? '100%' : '90vh', background: 'rgba(255,255,255,0.98)', borderRadius: isMobile ? 0 : 18, border: '1px solid rgba(0,0,0,0.08)', boxShadow: '0 12px 36px rgba(0,0,0,0.3)', overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
@@ -830,8 +527,7 @@ const ScoreDashboard = React.memo(({ scores, game, externalOpenPreview = 0, onPr
               <h3 style={{ margin: 0, fontSize: isMobile ? '1.1rem' : '1.4rem', fontWeight: 600, color: '#222', flex: 1 }}>{game.title}</h3>
                <button onClick={() => setShowGamePreview(false)} style={{ border: 'none', background: 'transparent', fontSize: isMobile ? '1.3rem' : '1.5rem', cursor: 'pointer', color: '#666', padding: '4px 8px' }}>×</button>
             </div>
-{/* Increase grid gap and padding for modal content area */}
-            <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '260px 1fr', gap: isMobile ? 12 : 20, padding: isMobile ? '12px' : 20, overflowY: 'auto', flex: 1 }}>
+{/* Increase grid gap and padding for modal content area */}            <div style={{ display: 'grid', gridTemplateColumns: isMobile ? '1fr' : '260px 1fr', gap: isMobile ? 12 : 20, padding: isMobile ? '12px' : 20, overflowY: 'auto', flex: 1 }}>
               <div style={{ position: 'relative', width: isMobile ? '100%' : 'auto' }}>
                 {game.cover_image ? (
                   <img src={game.cover_image} alt={`${game.title} cover`} style={{ width: '100%', height: isMobile ? 'auto' : 320, maxHeight: isMobile ? '300px' : '320px', objectFit: 'cover', borderRadius: 12, border: '1px solid rgba(0,0,0,0.08)' }} />
@@ -851,10 +547,9 @@ const ScoreDashboard = React.memo(({ scores, game, externalOpenPreview = 0, onPr
                     {String(scores.overall_score)}%
                   </div>
                 )}
-              </div>             
+              </div>
              
-{/* Increase vertical spacing between tab bar and content */}
-              <div style={{ display: 'grid', gap: isMobile ? 12 : 16 }}>
+{/* Increase vertical spacing between tab bar and content */}              <div style={{ display: 'grid', gap: isMobile ? 12 : 16 }}>
                 <div role="tablist" aria-label="Game preview tabs" style={{ display: 'flex', gap: isMobile ? 6 : 10, borderBottom: '1px solid #e5e7eb', marginBottom: 8, paddingBottom: 4, overflowX: isMobile ? 'auto' : 'visible' }}
                   onKeyDown={(e) => {
                     const order = ['overview','description','awards'];
@@ -882,8 +577,7 @@ const ScoreDashboard = React.memo(({ scores, game, externalOpenPreview = 0, onPr
                 {previewTab === 'overview' && (
                   <div style={tabCardStyle}>
                     {/* Add more row spacing inside the overview card */}
-                    <div style={{ display: 'grid', gap: 16 }}>
-                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: isMobile ? 8 : 12, color: '#333' }}>
+                    <div style={{ display: 'grid', gap: 16 }}>                      <div style={{ display: 'flex', flexWrap: 'wrap', gap: isMobile ? 8 : 12, color: '#333' }}>
                         {(() => {
                           // Extract year from release_year or release_date
                           let displayYear = game.release_year;
@@ -903,16 +597,15 @@ const ScoreDashboard = React.memo(({ scores, game, externalOpenPreview = 0, onPr
                         })()}
                         {game.release_date && <span style={{ padding: isMobile ? '5px 8px' : '6px 10px', background: '#f0f9ff', borderRadius: 8, border: '1px solid #cff0ff', fontSize: isMobile ? '0.85rem' : '0.9rem', color: '#333' }}>Released: <strong>{game.release_date}</strong></span>}
                         {rawgDetails?.age_rating && (
-                          <span style={{ padding: isMobile ? '5px 8px' : '6px 10px', background: '#fef3c7', borderRadius: 8, border: '1px solid #fde68a', fontSize: isMobile ? '0.85rem' : '0.9rem', color: '#333' }}>Age Rating: <strong>{rawgDetails.age_rating}</strong></span>
-                        )}
+                          <span style={{ padding: isMobile ? '5px 8px' : '6px 10px', background: '#fef3c7', borderRadius: 8, border: '1px solid #fde68a', fontSize: isMobile ? '0.85rem' : '0.9rem', color: '#333' }}>Age Rating: <strong>{rawgDetails.age_rating}</strong></span>                        )}
                       </div>
                       {(() => {
                         const list = Array.isArray(game.platforms) && game.platforms.length > 0 ? game.platforms : (game.platform ? [game.platform] : []);
                         if (!list.length) return null;
                         return (
-                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 12 }}>
+                          <div style={{ display: 'flex', flexWrap: 'wrap', gap: isMobile ? 8 : 12 }}>
                             {list.map((p, idx) => (
-                              <span key={`${p}-${idx}`} style={{ display: 'inline-flex', alignItems: 'center', gap: 8, padding: '8px 12px', background: '#f8fafc', borderRadius: 999, border: '1px solid #e5e7eb', color: '#111827', fontSize: '0.9rem', whiteSpace: 'nowrap', lineHeight: 1.25 }}>
+                              <span key={`${p}-${idx}`} style={{ display: 'inline-flex', alignItems: 'center', gap: isMobile ? 6 : 8, padding: isMobile ? '6px 10px' : '8px 12px', background: '#f8fafc', borderRadius: 999, border: '1px solid #e5e7eb', color: '#111827', fontSize: isMobile ? '0.8rem' : '0.9rem', whiteSpace: 'nowrap', lineHeight: 1.25 }}>
                                 <PlatformIcon name={p} />
                                 <span style={{ whiteSpace: 'nowrap' }}>{p}</span>
                               </span>
@@ -921,7 +614,7 @@ const ScoreDashboard = React.memo(({ scores, game, externalOpenPreview = 0, onPr
                         );
                       })()}
                       {/* RAWG genres/developers/publishers */}
-                      <div style={{ display: 'grid', gap: 8 }}>
+                      <div style={{ display: 'grid', gap: isMobile ? 6 : 8 }}>
                         {rawgLoading && (
                           <div style={{ color: '#64748b', fontSize: '0.9rem' }}>Loading RAWG details…</div>
                         )}
@@ -964,9 +657,9 @@ const ScoreDashboard = React.memo(({ scores, game, externalOpenPreview = 0, onPr
                     </div>
                     {/* Increase margin and gap for the QR/details row */}
                     <div style={{ marginTop: 16, display: 'grid', gridTemplateColumns: 'auto 1fr', alignItems: 'center', gap: 18 }}>
-                      <img src={`https://api.qrserver.com/v1/create-qr-code/?size=160x160&data=${encodeURIComponent(detailsUrl)}`} alt="QR code to game JSON data" style={{ width: 120, height: 120, borderRadius: 8, border: '1px solid #e5e7eb' }} />
+                      <img src={`https://api.qrserver.com/v1/create-qr-code/?size=160x160&data=${encodeURIComponent(detailsUrl)}`} alt="QR code to game details" style={{ width: 120, height: 120, borderRadius: 8, border: '1px solid #e5e7eb' }} />
                       <div style={{ fontSize: '0.9rem', color: '#374151' }}>
-                        <div style={{ fontWeight: 600, marginBottom: 6 }}>Scan for game JSON data</div>
+                        <div style={{ fontWeight: 600, marginBottom: 6 }}>Scan for database details</div>
                         <div style={{ wordBreak: 'break-all', color: '#111827' }}>{detailsUrl}</div>
                         {(() => {
                           const isLocal = typeof window !== 'undefined' && /localhost|127\.0\.0\.1/.test(window.location.hostname);
@@ -998,8 +691,7 @@ const ScoreDashboard = React.memo(({ scores, game, externalOpenPreview = 0, onPr
                             : []);
                       return (
                         <>
-                          <div style={{ display: 'flex', alignItems: 'center', gap: isMobile ? 6 : 8, marginBottom: isMobile ? 4 : 6, flexWrap: 'wrap' }}>
-                            <span style={{ fontSize: isMobile ? '0.9rem' : '1rem', fontWeight: 700, color: '#0f172a' }}>Awards</span>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: isMobile ? 6 : 8, marginBottom: isMobile ? 4 : 6, flexWrap: 'wrap' }}>                            <span style={{ fontSize: isMobile ? '0.9rem' : '1rem', fontWeight: 700, color: '#0f172a' }}>Awards</span>
                             <span style={{ fontSize: isMobile ? '0.7rem' : '0.8rem', color: '#64748b' }}>curated; verify with official sources</span>
                           </div>
                           {awards.length ? (
@@ -1024,9 +716,9 @@ const ScoreDashboard = React.memo(({ scores, game, externalOpenPreview = 0, onPr
                 {previewTab === 'description' && (
                   <div style={tabCardStyle}>
                     <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 8 }}>
-                      <span style={{ fontSize: '1rem', fontWeight: 700, color: '#0f172a' }}>About this game</span>
+                      <span style={{ fontSize: isMobile ? '0.9rem' : '1rem', fontWeight: 700, color: '#0f172a' }}>About this game</span>
                     </div>
-                    <div style={{ color: '#111827', fontSize: '0.95rem', lineHeight: 1.5 }}>
+                    <div style={{ color: '#111827', fontSize: isMobile ? '0.85rem' : '0.95rem', lineHeight: 1.5 }}>
                       <p style={{ marginTop: 0 }}>
                         {game.title}{game.release_year ? ` (${game.release_year})` : ''}
                         {Array.isArray(game.platforms) && game.platforms.length ? ` • Available on ${game.platforms.join(', ')}` : (game.platform ? ` • Platform: ${game.platform}` : '')}
@@ -1035,12 +727,12 @@ const ScoreDashboard = React.memo(({ scores, game, externalOpenPreview = 0, onPr
                         {rawgLoading ? 'Loading RAWG description…' : (rawgDescDisplay || 'No description available.')}
                       </p>
                       {canExpandDesc && !rawgLoading && (
-                        <button onClick={() => setDescExpanded(v => !v)} style={{ border: '1px solid #cbd5e1', background: '#fff', color: '#0f172a', borderRadius: 8, padding: '6px 10px', cursor: 'pointer' }}>
+                        <button onClick={() => setDescExpanded(v => !v)} style={{ border: '1px solid #cbd5e1', background: '#fff', color: '#0f172a', borderRadius: 8, padding: isMobile ? '5px 8px' : '6px 10px', cursor: 'pointer', fontSize: isMobile ? '0.85rem' : '0.9rem' }}>
                           {descExpanded ? 'Show less' : 'Show more'}
                         </button>
                       )}
                       <div style={{ marginTop: 10 }}>
-                        <div style={{ fontWeight: 600, color: '#0f172a', marginBottom: 6 }}>Why play</div>
+                        <div style={{ fontWeight: 600, color: '#0f172a', marginBottom: 6, fontSize: isMobile ? '0.9rem' : '1rem' }}>Why play</div>
                         <ul style={{ margin: 0, padding: '0 0 0 18px' }}>
                           <li style={{ marginBottom: 6 }}>{(localScores || scores)?.reasoning?.core_gameplay?.short || 'Strong core gameplay loop.'}</li>
                           <li style={{ marginBottom: 6 }}>{(localScores || scores)?.reasoning?.story_immersion?.short || 'Engaging narrative and worldbuilding.'}</li>

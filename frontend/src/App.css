@@ -1,18 +1,12 @@
-/* Hide any stray "0" that might appear from conditional renders */
 .App {
   position: relative;
-  font-size: 0; /* Hide any direct text nodes like "0" */
+  /* Hide direct text nodes (like stray "0") */
+  font-size: 0;
 }
 
-/* Restore font size for all child elements */
 .App > * {
-  font-size: inherit; /* Use inherit to respect inline styles */
+  font-size: 1rem;
 }
-
-/* Restore font size for nested elements */
-.App * {
-  font-size: inherit;
-}0
 @keyframes float {
   0%, 100% { transform: translateY(0px); }
   50% { transform: translateY(-20px); }

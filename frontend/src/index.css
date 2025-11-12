@@ -5,17 +5,12 @@ body {
     sans-serif;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-font-size: 0; /* Hide any direct text nodes like "0" */
+  /* Hide direct text nodes (like stray "0") */
+  font-size: 0;
 }
 
-/* Restore font size for all body children */
 body > * {
-  font-size: initial;
-}
-
-/* Restore font size for nested elements */
-body * {
-  font-size: inherit;
+  font-size: 1rem;
 }
 
 code {

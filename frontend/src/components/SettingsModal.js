@@ -56,49 +56,49 @@ const SettingsModal = ({ open, onClose }) => {
             </select>
           </section>
 
-              <section style={{ background: '#f8fafc', border: '1px solid #e5e7eb', borderRadius: 12, padding: 16, color: '#0f172a' }}>
-                <h4 style={{ margin: '0 0 8px 0', color: '#0f172a', fontWeight: 600, fontSize: '16px', fontFamily: 'inherit' }}>Theme</h4>
-                <label htmlFor="theme" style={{ display: 'block', fontWeight: 600, color: '#0f172a', marginBottom: 6, fontSize: '14px', fontFamily: 'inherit' }}>Appearance</label>
-                <select id="theme" value={theme} onChange={(e) => setTheme(e.target.value)} style={{ padding: '8px 10px', borderRadius: 10, border: '1px solid #cbd5e1', background: '#fff', color: '#0f172a', width: '100%', fontSize: '14px', fontFamily: 'inherit' }}>
-                  <option value="dark" style={{ color: '#0f172a', background: '#fff' }}>Dark</option>
-                  <option value="light" style={{ color: '#0f172a', background: '#fff' }}>Light</option>
-                </select>
-              </section>
+          <section style={{ background: '#f8fafc', border: '1px solid #e5e7eb', borderRadius: 12, padding: 16, color: '#0f172a' }}>
+            <h4 style={{ margin: '0 0 8px 0', color: '#0f172a', fontWeight: 600, fontSize: '16px', fontFamily: 'inherit' }}>Theme</h4>
+            <label htmlFor="theme" style={{ display: 'block', fontWeight: 600, color: '#0f172a', marginBottom: 6, fontSize: '14px', fontFamily: 'inherit' }}>Appearance</label>
+            <select id="theme" value={theme} onChange={(e) => setTheme(e.target.value)} style={{ padding: '8px 10px', borderRadius: 10, border: '1px solid #cbd5e1', background: '#fff', color: '#0f172a', width: '100%', fontSize: '14px', fontFamily: 'inherit' }}>
+              <option value="dark" style={{ color: '#0f172a', background: '#fff' }}>Dark</option>
+              <option value="light" style={{ color: '#0f172a', background: '#fff' }}>Light</option>
+            </select>
+          </section>
 
-              <section style={{ background: '#f8fafc', border: '1px solid #e5e7eb', borderRadius: 12, padding: 16, color: '#0f172a' }}>
-                <h4 style={{ margin: '0 0 12px 0', color: '#0f172a', fontWeight: 600, fontSize: '16px', fontFamily: 'inherit' }}>Contact Developer</h4>
-                <div style={{ display: 'grid', gap: 10, fontSize: '14px', fontFamily: 'inherit' }}>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <span style={{ fontWeight: 600, color: '#0f172a', minWidth: '60px' }}>Email:</span>
-                    <a href="mailto:tsebo.ramonyalioa.an@gmail.com" style={{ color: '#0ea5e9', textDecoration: 'none' }} onMouseEnter={(e) => e.target.style.textDecoration = 'underline'} onMouseLeave={(e) => e.target.style.textDecoration = 'none'}>
-                      tsebo.ramonyalioa.an@gmail.com
-                    </a>
-                  </div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <span style={{ fontWeight: 600, color: '#0f172a', minWidth: '60px' }}>Phone:</span>
-                    <a href="tel:+27829000488" style={{ color: '#0ea5e9', textDecoration: 'none' }} onMouseEnter={(e) => e.target.style.textDecoration = 'underline'} onMouseLeave={(e) => e.target.style.textDecoration = 'none'}>
-                      (+27) 82 900 0488
-                    </a>
-                  </div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <span style={{ fontWeight: 600, color: '#0f172a', minWidth: '60px' }}>GitHub:</span>
-                    <a href="https://github.com/Tsebo200" target="_blank" rel="noopener noreferrer" style={{ color: '#0ea5e9', textDecoration: 'none' }} onMouseEnter={(e) => e.target.style.textDecoration = 'underline'} onMouseLeave={(e) => e.target.style.textDecoration = 'none'}>
-                      github.com/Tsebo200
-                    </a>
-                  </div>
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                    <span style={{ fontWeight: 600, color: '#0f172a', minWidth: '60px' }}>LinkedIn:</span>
-                    <a href="https://www.linkedin.com/in/tsebo-ramonyalioa-2392381b4" target="_blank" rel="noopener noreferrer" style={{ color: '#0ea5e9', textDecoration: 'none' }} onMouseEnter={(e) => e.target.style.textDecoration = 'underline'} onMouseLeave={(e) => e.target.style.textDecoration = 'none'}>
-                      linkedin.com/in/tsebo-ramonyalioa-2392381b4
-                    </a>
-                  </div>
-                </div>
-              </section>
+          <section style={{ background: '#f8fafc', border: '1px solid #e5e7eb', borderRadius: 12, padding: 16, color: '#0f172a' }}>
+            <h4 style={{ margin: '0 0 12px 0', color: '#0f172a', fontWeight: 600, fontSize: '16px', fontFamily: 'inherit' }}>Contact Developer</h4>
+            <div style={{ display: 'grid', gap: 10, fontSize: '14px', fontFamily: 'inherit' }}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span style={{ fontWeight: 600, color: '#0f172a', minWidth: '60px' }}>Email:</span>
+                <a href="mailto:tsebo.ramonyalioa.an@gmail.com" style={{ color: '#0ea5e9', textDecoration: 'none' }} onMouseEnter={(e) => e.target.style.textDecoration = 'underline'} onMouseLeave={(e) => e.target.style.textDecoration = 'none'}>
+                  tsebo.ramonyalioa.an@gmail.com
+                </a>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span style={{ fontWeight: 600, color: '#0f172a', minWidth: '60px' }}>Phone:</span>
+                <a href="tel:+27829000488" style={{ color: '#0ea5e9', textDecoration: 'none' }} onMouseEnter={(e) => e.target.style.textDecoration = 'underline'} onMouseLeave={(e) => e.target.style.textDecoration = 'none'}>
+                  (+27) 82 900 0488
+                </a>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span style={{ fontWeight: 600, color: '#0f172a', minWidth: '60px' }}>GitHub:</span>
+                <a href="https://github.com/Tsebo200" target="_blank" rel="noopener noreferrer" style={{ color: '#0ea5e9', textDecoration: 'none' }} onMouseEnter={(e) => e.target.style.textDecoration = 'underline'} onMouseLeave={(e) => e.target.style.textDecoration = 'none'}>
+                  github.com/Tsebo200
+                </a>
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                <span style={{ fontWeight: 600, color: '#0f172a', minWidth: '60px' }}>LinkedIn:</span>
+                <a href="https://www.linkedin.com/in/tsebo-ramonyalioa-2392381b4" target="_blank" rel="noopener noreferrer" style={{ color: '#0ea5e9', textDecoration: 'none' }} onMouseEnter={(e) => e.target.style.textDecoration = 'underline'} onMouseLeave={(e) => e.target.style.textDecoration = 'none'}>
+                  linkedin.com/in/tsebo-ramonyalioa-2392381b4
+                </a>
+              </div>
             </div>
-          </div>
-        </div>,
-        document.body
-      );
-    };
-    
-    export default SettingsModal;
+          </section>
+        </div>
+      </div>
+    </div>,
+    document.body
+  );
+};
+
+export default SettingsModal;
