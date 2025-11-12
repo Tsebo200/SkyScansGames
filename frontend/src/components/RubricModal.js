@@ -123,3 +123,4 @@ const RubricModal = ({ open, onClose, rubricPalette }) => {
 
 export default RubricModal;
 
+

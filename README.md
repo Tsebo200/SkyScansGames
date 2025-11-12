@@ -14,7 +14,7 @@
 
 <h5 align="center" style="padding:0;margin:0;">Tsebo Ramonyalioa</h5>
 
-<h5 align="center" style="padding:0;margin:0;">SkyScans Games</h5>
+<h5 align="center" style="padding:0;margin:0;">SkyScansGames</h5>
 
 <h6 align="center">DV300 - Semester 2 - Term 3 | 2025</h6>
 
@@ -26,7 +26,7 @@
     <img src="frontend/public/SkyLogo.png" align="center" alt="Sky Logo" width="140" height="140">
   </a>
 
-  <h3 align="center">Sky Scans Games (SSG) Dashboard</h3>
+  <h3 align="center">SkyScansGames Dashboard</h3>
 
   <p align="center">
     An AI-augmented game discovery web app with rubric-driven scoring, search, and accessibility-focused UI. Frontend in React, backend in FastAPI with RAWG API integration.

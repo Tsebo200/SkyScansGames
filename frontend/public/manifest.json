@@ -1,6 +1,6 @@
 {
   "short_name": "SkyScansGames",
-  "name": "SSG - video Game Analysis",
+  "name": "SkyScansGames",
   "icons": [
     {
       "src": "SkyLogo.png",
@@ -11,7 +11,7 @@
       "src": "SkyLogo.png",
       "type": "image/png",
       "sizes": "512x512"
-    },
+    }
   ],
   "start_url": ".",
   "display": "standalone",
