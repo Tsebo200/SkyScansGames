@@ -1,5 +1,7 @@
 # Contributing & Branching Strategy
 
+Please contact me before you apply any changes.
+
 We keep `Develop` always green and functional. All work merges via Pull Request.
 
 ## Branches
