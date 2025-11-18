@@ -23,7 +23,7 @@
 <p align="center">
 
   <a href="#">
-    <img src="frontend/public/Sky.png" align="center" alt="Sky Logo" width="140" height="140">
+    <img src="frontend/public/SkyLogo.png" align="center" alt="Sky Logo" width="140" height="140">
   </a>
 
   <h3 align="center">SkyScansGames Dashboard</h3>
